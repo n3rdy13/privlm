@@ -157,9 +157,11 @@ final class ClusterChannel: NSObject, NetServiceDelegate {
     /// entitlement lifts iOS's per-app limit to about all of RAM (8.2 GB on
     /// an 8 GB iPad), but the worker keeps its layers in GPU memory, so the
     /// GPU's recommended working set (5.7 GB on an M1) is the real ceiling.
+    /// A worker that serves its CPU (older GPUs) has only the app limit.
     static func usableMemoryMb() -> Int {
         let appLimit = LlamaClusterWorker.availableMemoryMb()
-        guard let gpu = MTLCreateSystemDefaultDevice() else { return appLimit }
+        guard LlamaClusterWorker.servesGpu(),
+              let gpu = MTLCreateSystemDefaultDevice() else { return appLimit }
         let gpuMb = Int(gpu.recommendedMaxWorkingSetSize / (1024 * 1024))
         return min(appLimit, gpuMb)
     }

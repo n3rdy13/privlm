@@ -2,9 +2,9 @@
 
 NS_ASSUME_NONNULL_BEGIN
 
-/// Phone cluster worker on iOS: serves this device's GPU (Metal) to a
-/// master phone over llama.cpp's RPC protocol. Mirrors the Android worker
-/// (ClusterWorkerService / jni_wrapper.cpp).
+/// Phone cluster worker on iOS: serves this device's GPU (Metal), or its CPU
+/// where the GPU is too old, to a master phone over llama.cpp's RPC protocol.
+/// Mirrors the Android worker (ClusterWorkerService / jni_wrapper.cpp).
 ///
 /// ggml's RPC server can't be stopped, and iOS has no separate worker
 /// process to end, so once started it runs until the app closes.
@@ -17,6 +17,11 @@ NS_ASSUME_NONNULL_BEGIN
                          cacheDir:(NSString*)cacheDir;
 
 + (BOOL)isRunning;
+
+/// Whether a worker on this device serves its GPU. llama.cpp's Metal backend
+/// can't run a model's layers on GPUs older than the A14's (it needs
+/// MTLGPUFamilyApple7), so those devices serve their CPU instead.
++ (BOOL)servesGpu;
 
 /// Why the server stopped, if it started and then exited.
 + (nullable NSString*)lastError;
