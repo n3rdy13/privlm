@@ -96,7 +96,7 @@ class ClusterWorkerStatus {
 
 /// Phone cluster: one phone (the master) runs a model whose layers are
 /// spread across other phones (workers) on the same Wi-Fi, using llama.cpp's
-/// RPC backend. Android arm64 only.
+/// RPC backend. Android arm64 and iOS devices can each be master or worker.
 ///
 /// The RPC protocol has no authentication: only run workers on a network you
 /// trust.
@@ -104,8 +104,9 @@ class LlamaCluster {
   static const _channel = MethodChannel('llama_flutter_android/cluster');
   static const defaultPort = 50052;
 
-  /// Starts serving this phone's CPU to a master, in a foreground service
-  /// that keeps running in the background.
+  /// Starts serving this phone's processor to a master. On Android it runs
+  /// in a foreground service that keeps running in the background; on iOS it
+  /// runs inside the app, until the app closes.
   static Future<void> startWorker({int port = defaultPort, int? threads}) =>
       _channel.invokeMethod('startWorker', {'port': port, 'threads': threads});
 

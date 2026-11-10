@@ -49,9 +49,8 @@ class ClusterService extends GetxService {
 
   static bool get isSupported => !kIsWeb && (Platform.isAndroid || Platform.isIOS);
 
-  /// Running a model across workers is Android-only for now; iOS devices
-  /// can be workers (their GPU serves a master's layers).
-  static bool get canBeMaster => !kIsWeb && Platform.isAndroid;
+  /// Android and iOS devices can both run a model across workers.
+  static bool get canBeMaster => isSupported;
 
   /// iOS can't stop the worker without closing the app.
   static bool get workerStopsWithApp => !kIsWeb && Platform.isIOS;
