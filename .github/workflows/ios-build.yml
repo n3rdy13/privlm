@@ -1,0 +1,86 @@
+# Builds an unsigned iOS .ipa on a GitHub macOS runner, for sideloading with
+# AltStore or Sideloadly (they sign it with your Apple ID when installing).
+# Download it from the run's Artifacts section.
+name: iOS build
+
+on:
+  workflow_dispatch:
+  push:
+    branches: ['claude/**']
+    paths-ignore: ['**.md', 'android/**']
+
+concurrency:
+  group: ios-build-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  build:
+    # Xcode 26: device_info_plus needs the iOS 26 SDK.
+    runs-on: macos-26
+    timeout-minutes: 90
+    env:
+      LLAMA_PLUGIN: local_plugins/llama_flutter_android
+      SD_PLUGIN: local_plugins/sd_flutter_android
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          # stable-diffusion.cpp (and its ggml) for the image generation plugin.
+          submodules: recursive
+
+      - uses: subosito/flutter-action@v2
+        with:
+          channel: stable
+          flutter-version: 3.38.x
+          cache: true
+
+      - name: Install build tools
+        run: brew install ninja
+
+      # llama.cpp for iOS isn't committed; it's built from the tree the
+      # Android build uses. Rebuilt only when that tree or the script changes.
+      - name: llama.cpp cache key
+        id: llama
+        run: |
+          echo "key=llama-ios-$(git rev-parse "HEAD:$LLAMA_PLUGIN/android/src/main/cpp/llama.cpp")-${{ hashFiles('local_plugins/llama_flutter_android/scripts/build_llama_ios.sh') }}" >> "$GITHUB_OUTPUT"
+
+      - uses: actions/cache@v4
+        id: llama-cache
+        with:
+          path: local_plugins/llama_flutter_android/ios/llama_ios
+          key: ${{ steps.llama.outputs.key }}
+
+      - name: Build llama.cpp for iOS
+        if: steps.llama-cache.outputs.cache-hit != 'true'
+        run: |
+          # The script replaces the whole output folder; keep its README.
+          cp "$LLAMA_PLUGIN/ios/llama_ios/README.md" "$RUNNER_TEMP/llama_ios_README.md"
+          "$LLAMA_PLUGIN/scripts/build_llama_ios.sh"
+          cp "$RUNNER_TEMP/llama_ios_README.md" "$LLAMA_PLUGIN/ios/llama_ios/README.md"
+
+      # CocoaPods doesn't run a podspec's prepare_command for local (:path)
+      # pods, so run the image generation plugin's one here: it copies the
+      # stable-diffusion.cpp sources the pod compiles.
+      - name: Prepare stable-diffusion.cpp sources
+        working-directory: local_plugins/sd_flutter_android/ios
+        run: |
+          pod ipc spec sd_flutter_android.podspec | jq -r .prepare_command > "$RUNNER_TEMP/sd_prepare.sh"
+          bash "$RUNNER_TEMP/sd_prepare.sh"
+          test -f sd_cpp_src/include/stable-diffusion.h
+
+      - run: flutter pub get
+
+      - name: Build the app (unsigned)
+        run: flutter build ios --release --no-codesign
+
+      - name: Package the .ipa
+        run: |
+          mkdir -p "$RUNNER_TEMP/ipa/Payload"
+          cp -R build/ios/iphoneos/Runner.app "$RUNNER_TEMP/ipa/Payload/"
+          (cd "$RUNNER_TEMP/ipa" && zip -qry PrivateLM-unsigned.ipa Payload)
+          du -h "$RUNNER_TEMP/ipa/PrivateLM-unsigned.ipa"
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: PrivateLM-iOS-unsigned
+          path: ${{ runner.temp }}/ipa/PrivateLM-unsigned.ipa
+          if-no-files-found: error

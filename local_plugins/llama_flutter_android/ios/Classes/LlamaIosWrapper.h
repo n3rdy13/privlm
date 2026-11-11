@@ -57,6 +57,25 @@ NS_ASSUME_NONNULL_BEGIN
 /// Sets system prompt length for smart context management.
 - (void)setSystemPromptLength:(int)length;
 
+// MARK: Phone cluster master
+
+/// Sets the workers ("host:port") the next model load spreads its layers
+/// across. Each worker gets a share of the layers by its weight (e.g. free
+/// RAM); this device keeps a share by `localWeight`. An empty list turns
+/// cluster mode off. Every endpoint must already be reachable (see
+/// `probeEndpoint:timeoutMs:`): llama.cpp aborts the app if it can't connect.
++ (void)setClusterEndpoints:(NSArray<NSString*>*)endpoints
+                    weights:(NSArray<NSNumber*>*)weights
+                localWeight:(float)localWeight;
+
+/// Where the last cluster load put its weights: `name` (llama.cpp buffer
+/// name, "RPC0[host:port]" for a worker) and `mb` per buffer.
++ (NSArray<NSDictionary<NSString*, id>*>*)lastLoadBuffers;
+
+/// Whether something accepts a TCP connection on `endpoint` ("host:port")
+/// within `timeoutMs`. Blocks; call off the main thread.
++ (BOOL)probeEndpoint:(NSString*)endpoint timeoutMs:(int)timeoutMs;
+
 @end
 
 NS_ASSUME_NONNULL_END

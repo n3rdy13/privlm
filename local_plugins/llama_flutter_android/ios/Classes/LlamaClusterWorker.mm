@@ -1,4 +1,5 @@
 #import "LlamaClusterWorker.h"
+#import <Metal/Metal.h>
 #include "ggml-backend.h"
 #include "ggml-rpc.h"
 #include <os/proc.h>
@@ -85,9 +86,15 @@ static std::string currentPeer() {
     ggml_log_set(clusterLog, nullptr);
 
     // The GPU (Metal) does the work: on Apple silicon it reads memory far
-    // faster than the CPU cores do. CPU only if there's no Metal device.
-    ggml_backend_dev_t dev = ggml_backend_dev_by_type(GGML_BACKEND_DEVICE_TYPE_GPU);
-    if (!dev) dev = ggml_backend_dev_by_type(GGML_BACKEND_DEVICE_TYPE_IGPU);
+    // faster than the CPU cores do. The server runs everything on the one
+    // device it serves, with no fallback, and aborts on an operation that
+    // device can't do: so CPU where the GPU is too old (see servesGpu) or
+    // there's no Metal device.
+    ggml_backend_dev_t dev = nullptr;
+    if ([self servesGpu]) {
+        dev = ggml_backend_dev_by_type(GGML_BACKEND_DEVICE_TYPE_GPU);
+        if (!dev) dev = ggml_backend_dev_by_type(GGML_BACKEND_DEVICE_TYPE_IGPU);
+    }
     if (!dev) dev = ggml_backend_dev_by_type(GGML_BACKEND_DEVICE_TYPE_CPU);
     if (!dev) return @"No compute device found";
 
@@ -116,6 +123,16 @@ static std::string currentPeer() {
 
 + (BOOL)isRunning {
     return g_running;
+}
+
++ (BOOL)servesGpu {
+    static BOOL supported;
+    static dispatch_once_t once;
+    dispatch_once(&once, ^{
+        id<MTLDevice> gpu = MTLCreateSystemDefaultDevice();
+        supported = gpu != nil && [gpu supportsFamily:MTLGPUFamilyApple7];
+    });
+    return supported;
 }
 
 + (nullable NSString*)lastError {

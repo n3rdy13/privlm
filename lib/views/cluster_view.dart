@@ -82,14 +82,10 @@ class _ClusterViewState extends State<ClusterView> {
 
   List<Widget> _offSection() => [
         AppNotice(
-          ClusterService.canBeMaster
-              ? 'Run models too big for one phone by sharing the work across '
-                  'phones on the same Wi-Fi.\n\n'
-                  'Master: the phone you chat on. It runs the model.\n'
-                  'Worker: a phone that lends its memory to the master.'
-              : 'Help an Android phone running PrivateLM run models too big for '
-                  'it alone: choose Worker, then scan this device\'s QR code '
-                  'from that phone.',
+          'Run models too big for one phone by sharing the work across '
+          'phones on the same Wi-Fi.\n\n'
+          'Master: the phone you chat on. It runs the model.\n'
+          'Worker: a phone that lends its memory to the master.',
           icon: Icons.hub_outlined,
         ),
       ];
