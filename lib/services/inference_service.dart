@@ -57,6 +57,16 @@ class InferenceService extends GetxService {
   /// The loaded GGUF model has a working vision projector (images allowed).
   bool get ggufVisionLoaded => _engine?.ggufVisionLoaded ?? false;
 
+  @override
+  void onInit() {
+    super.onInit();
+    // Phone cluster: keep the screen on while tokens are being generated.
+    if (Get.isRegistered<ClusterService>()) {
+      final cluster = Get.find<ClusterService>();
+      ever<bool>(isGenerating, (g) => cluster.generating.value = g);
+    }
+  }
+
   Future<String> loadModel(
     String modelPath, {
     String? modelName,

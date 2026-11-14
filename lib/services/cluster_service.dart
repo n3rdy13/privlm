@@ -83,6 +83,9 @@ class ClusterService extends GetxService {
   /// How the loaded model is spread across phones; empty when it isn't.
   final split = <ClusterShare>[].obs;
 
+  /// The loaded model is generating tokens (set by InferenceService).
+  final generating = false.obs;
+
   String deviceName = '';
   double? _localSpeed;
   Timer? _statusTimer;
@@ -119,6 +122,8 @@ class ClusterService extends GetxService {
       // borrows the app's priority), so keep the screen on while sharing.
       ever<ClusterWorkerStatus>(worker, (_) => _updateKeepScreenOn());
       ever<bool>(serving, (_) => _updateKeepScreenOn());
+      ever<List<ClusterShare>>(split, (_) => _updateKeepScreenOn());
+      ever<bool>(generating, (_) => _updateKeepScreenOn());
       refreshWifiAddress();
     }
   }
@@ -130,12 +135,15 @@ class ClusterService extends GetxService {
   }
 
   /// Android throttles a phone whose screen is off (slow cores, low CPU
-  /// share), so keep it on while this device works for others: as a worker,
-  /// or serving the model over the network.
+  /// share), and iOS suspends the app and its Wi-Fi once the screen locks,
+  /// so keep it on while this device works for others (as a worker, or
+  /// serving the model over the network), while it runs a model split across
+  /// the cluster as master, and while it generates tokens.
   bool? _screenKeptOn;
   void _updateKeepScreenOn() {
     final s = worker.value;
-    final on = s.running || s.starting || serving.value;
+    final on = s.running || s.starting || serving.value ||
+        split.length > 1 || generating.value;
     if (on == _screenKeptOn) return;
     _screenKeptOn = on;
     LlamaCluster.setKeepScreenOn(on).catchError((_) {});
