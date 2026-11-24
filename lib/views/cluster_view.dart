@@ -489,7 +489,7 @@ class _QrScanPageState extends State<_QrScanPage> {
           right: 24,
           bottom: 48,
           child: Text(
-            'Point at the QR code on the worker phone',
+            'Point at the QR code on the worker phone or laptop',
             textAlign: TextAlign.center,
             style: TextStyle(color: Colors.white, fontSize: 15),
           ),

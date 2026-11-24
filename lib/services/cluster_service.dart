@@ -266,7 +266,7 @@ class ClusterService extends GetxService {
   /// an error message, or null on success.
   Future<String?> addManual(String input) async {
     final text = input.trim();
-    if (text.isEmpty) return 'Enter the worker phone\'s IP address';
+    if (text.isEmpty) return 'Enter the worker\'s IP address';
     final host = text.contains(':') ? text.substring(0, text.lastIndexOf(':')) : text;
     final port = text.contains(':')
         ? int.tryParse(text.substring(text.lastIndexOf(':') + 1))
@@ -308,7 +308,7 @@ class ClusterService extends GetxService {
 
   Future<String?> _add(ClusterWorker worker) async {
     if (!await LlamaCluster.probe(worker.endpoint)) {
-      return 'Can\'t reach ${worker.endpoint}. Check that the phone is a worker '
+      return 'Can\'t reach ${worker.endpoint}. Check that the device is a worker '
           'and on the same Wi-Fi.';
     }
     workers.removeWhere((w) => w.endpoint == worker.endpoint);
