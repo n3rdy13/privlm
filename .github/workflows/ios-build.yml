@@ -7,7 +7,7 @@ on:
   workflow_dispatch:
   push:
     branches: ['claude/**']
-    paths-ignore: ['**.md', 'android/**']
+    paths-ignore: ['**.md', 'android/**', 'tools/**', '.github/workflows/laptop-worker-windows.yml']
 
 concurrency:
   group: ios-build-${{ github.ref }}

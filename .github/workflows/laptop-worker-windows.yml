@@ -1,0 +1,84 @@
+# Builds PrivateLM-Worker.exe: a Windows app that shares a laptop's GPU
+# (Vulkan) or CPU with a PrivateLM phone cluster. Download it from the run's
+# Artifacts section.
+name: Laptop worker (Windows)
+
+on:
+  workflow_dispatch:
+  push:
+    branches: ['claude/**']
+    paths:
+      - 'tools/laptop_worker/**'
+      - '.github/workflows/laptop-worker-windows.yml'
+      - 'local_plugins/llama_flutter_android/android/src/main/cpp/llama.cpp/ggml/**'
+
+concurrency:
+  group: laptop-worker-windows-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  build:
+    runs-on: windows-2022
+    timeout-minutes: 60
+    env:
+      VULKAN_VERSION: 1.4.313.2
+      # Static C++ runtime and no OpenMP DLL: runs without installing the
+      # Visual C++ redistributable. AVX2 covers laptops from 2013 on.
+      CPU_FLAGS: >-
+        -DCMAKE_BUILD_TYPE=Release
+        -DCMAKE_MSVC_RUNTIME_LIBRARY=MultiThreaded
+        -DGGML_NATIVE=OFF -DGGML_AVX=ON -DGGML_AVX2=ON -DGGML_FMA=ON -DGGML_F16C=ON
+        -DGGML_OPENMP=OFF
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install the Vulkan SDK
+        shell: pwsh
+        run: |
+          $installer = "$env:RUNNER_TEMP\vulkan-sdk.exe"
+          curl.exe -sSL -o $installer "https://sdk.lunarg.com/sdk/download/$env:VULKAN_VERSION/windows/vulkansdk-windows-X64-$env:VULKAN_VERSION.exe"
+          & $installer --accept-licenses --default-answer --confirm-command install
+          Add-Content $env:GITHUB_ENV "VULKAN_SDK=C:\VulkanSDK\$env:VULKAN_VERSION"
+          Add-Content $env:GITHUB_PATH "C:\VulkanSDK\$env:VULKAN_VERSION\bin"
+
+      - name: Build the CPU worker
+        shell: pwsh
+        run: |
+          cmake -S tools/laptop_worker -B build/cpu $($env:CPU_FLAGS -split ' ')
+          cmake --build build/cpu --config Release -j 4
+
+      - name: Build the GPU (Vulkan) worker
+        shell: pwsh
+        run: |
+          cmake -S tools/laptop_worker -B build/vulkan $($env:CPU_FLAGS -split ' ') -DGGML_VULKAN=ON
+          cmake --build build/vulkan --config Release -j 4
+
+      - name: Check the workers run
+        shell: pwsh
+        run: |
+          build/cpu/Release/privatelm-worker.exe --info
+          # The runner has no GPU: the Vulkan build must still fall back cleanly.
+          build/vulkan/Release/privatelm-worker.exe --info --cpu
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+
+      - name: Package PrivateLM-Worker.exe
+        shell: pwsh
+        working-directory: tools/laptop_worker
+        run: |
+          python -m pip install --upgrade pip
+          python -m pip install pyinstaller zeroconf qrcode psutil
+          python -m PyInstaller --noconfirm --onefile --windowed --name PrivateLM-Worker `
+            --collect-submodules zeroconf `
+            --add-binary "../../build/cpu/Release/privatelm-worker.exe;bin/cpu" `
+            --add-binary "../../build/vulkan/Release/privatelm-worker.exe;bin/vulkan" `
+            worker_gui.py
+          Get-Item dist/PrivateLM-Worker.exe | Select-Object Name, Length
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: PrivateLM-Worker-windows
+          path: tools/laptop_worker/dist/PrivateLM-Worker.exe
+          if-no-files-found: error
