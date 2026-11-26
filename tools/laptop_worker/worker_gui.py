@@ -1,7 +1,8 @@
 #!/usr/bin/env python3
-"""PrivateLM Worker: a window for sharing this computer with a phone cluster.
+"""PrivateLM Laptop: run a model here with phones as workers (Master tab), or
+lend this computer to a master phone (Worker tab).
 
-Made for Windows (built into PrivateLM-Worker.exe by the "Laptop worker"
+Made for Windows (built into PrivateLM-Laptop.exe by the "Laptop app"
 GitHub Actions workflow), and it also runs from source on macOS and Linux:
 
     pip install zeroconf qrcode psutil
@@ -24,6 +25,7 @@ from tkinter import messagebox, ttk
 from urllib.parse import urlencode
 
 import privatelm_worker as core
+from master_tab import MasterTab
 
 IS_WINDOWS = platform.system() == "Windows"
 FROZEN = getattr(sys, "frozen", False)
@@ -36,13 +38,13 @@ DEVICE_CPU = "CPU only"
 
 # ── Worker binaries ─────────────────────────────────────────────────────────
 
-def bundled_binary(variant: str):
-    """The worker built into the .exe ("vulkan" or "cpu"), copied to a fixed
+def bundled_binary(variant: str, name: str = "privatelm-worker"):
+    """A program built into the .exe (bin/<variant>/<name>), copied to a fixed
     folder first: the .exe unpacks to a new temp folder on every launch, and
     Windows Firewall would ask again for each new path."""
     if not FROZEN:
         return None
-    name = "privatelm-worker.exe" if IS_WINDOWS else "privatelm-worker"
+    name = name + ".exe" if IS_WINDOWS else name
     src = Path(getattr(sys, "_MEIPASS", "")) / "bin" / variant / name
     if not src.exists():
         return None
@@ -54,6 +56,17 @@ def bundled_binary(variant: str):
         shutil.copy2(src, dst)
         stamp.write_text(digest)
     return dst
+
+
+def find_server(status) -> Path:
+    """llama-server for the Master tab: built into the .exe, or built from
+    source the first time."""
+    if FROZEN:
+        binary = bundled_binary("server", "llama-server")
+        if not binary:
+            raise RuntimeError("This copy of PrivateLM Laptop has no llama-server.")
+        return binary
+    return core.build_server(log=status)
 
 
 def candidate_binaries(choice: str):
@@ -124,43 +137,34 @@ def connected_peers(pid: int, port: int):
 
 # ── Window ──────────────────────────────────────────────────────────────────
 
-class WorkerApp:
+class WorkerTab:
+    """Share this computer with a master phone, like a phone set to Worker."""
     POLL_MS = 1500
 
-    def __init__(self, root: tk.Tk):
+    def __init__(self, root: tk.Tk, container, logs: queue.Queue):
         self.root = root
+        self.container = container
         self.server = None
         self.published = None
         self.binary = None
         self.args = []
         self.info = None
-        self.logs = queue.Queue()
+        self.logs = logs
         self.measuring = False
+        self.is_busy = None  # set by the window: True while the Master tab runs a model
 
-        root.title("PrivateLM Worker")
-        root.minsize(460, 0)
-        root.protocol("WM_DELETE_WINDOW", self.on_close)
         self.build_ui()
         self.remeasure()
-        self.root.after(200, self.drain_logs)
 
     # UI ---------------------------------------------------------------------
 
     def build_ui(self):
-        style = ttk.Style()
-        if IS_WINDOWS and "vista" in style.theme_names():
-            style.theme_use("vista")
-        style.configure("Title.TLabel", font=("Segoe UI", 16, "bold") if IS_WINDOWS else ("", 16, "bold"))
-        style.configure("Muted.TLabel", foreground="#666666")
-        style.configure("Status.TLabel", font=("Segoe UI", 11, "bold") if IS_WINDOWS else ("", 11, "bold"))
-
-        outer = ttk.Frame(self.root, padding=18)
+        outer = ttk.Frame(self.container, padding=16)
         outer.pack(fill="both", expand=True)
         outer.columnconfigure(1, weight=1)
 
-        ttk.Label(outer, text="PrivateLM Worker", style="Title.TLabel").grid(row=0, column=0, columnspan=3, sticky="w")
-        ttk.Label(outer, text="Lend this computer's memory and processor to your phone cluster.",
-                  style="Muted.TLabel").grid(row=1, column=0, columnspan=3, sticky="w", pady=(2, 14))
+        ttk.Label(outer, text="Lend this computer's memory and processor to a master phone.",
+                  style="Muted.TLabel").grid(row=1, column=0, columnspan=3, sticky="w", pady=(0, 12))
 
         # Status
         status = ttk.Frame(outer)
@@ -222,44 +226,10 @@ class WorkerApp:
                                    "with its lid open. If Windows Firewall asks, allow private networks.")
         self.tips.grid(row=9, column=0, columnspan=3, sticky="w", pady=(10, 4))
 
-        # Log
-        self.log_shown = tk.BooleanVar(value=False)
-        ttk.Checkbutton(outer, text="Show log", variable=self.log_shown, command=self.toggle_log)\
-            .grid(row=10, column=0, columnspan=3, sticky="w", pady=(6, 0))
-        self.log_frame = ttk.Frame(outer)
-        self.log = tk.Text(self.log_frame, height=10, width=60, wrap="word", state="disabled",
-                           font=("Consolas", 9) if IS_WINDOWS else ("", 9))
-        scroll = ttk.Scrollbar(self.log_frame, command=self.log.yview)
-        self.log.configure(yscrollcommand=scroll.set)
-        self.log.pack(side="left", fill="both", expand=True)
-        scroll.pack(side="right", fill="y")
 
     def set_dot(self, color: str):
         self.dot.delete("all")
         self.dot.create_oval(2, 2, 12, 12, fill=color, outline=color)
-
-    def toggle_log(self):
-        if self.log_shown.get():
-            self.log_frame.grid(row=11, column=0, columnspan=3, sticky="nsew", pady=(6, 0))
-        else:
-            self.log_frame.grid_remove()
-
-    def append_log(self, text: str):
-        self.log.configure(state="normal")
-        self.log.insert("end", text if text.endswith("\n") else text + "\n")
-        lines = int(self.log.index("end-1c").split(".")[0])
-        if lines > 2000:
-            self.log.delete("1.0", f"{lines - 2000}.0")
-        self.log.see("end")
-        self.log.configure(state="disabled")
-
-    def drain_logs(self):
-        try:
-            while True:
-                self.append_log(self.logs.get_nowait())
-        except queue.Empty:
-            pass
-        self.root.after(200, self.drain_logs)
 
     def update_mem_label(self):
         self.mem_label.set(f"{self.mem_var.get():.1f} GB")
@@ -326,7 +296,7 @@ class WorkerApp:
     def on_measure_failed(self, message: str):
         self.measuring = False
         self.device_info_var.set("This computer couldn't be checked. See the log.")
-        self.append_log(message)
+        self.logs.put(message)
         if self.device_var.get() != DEVICE_CPU:
             self.device_var.set(DEVICE_CPU)
             self.remeasure()
@@ -340,12 +310,16 @@ class WorkerApp:
             self.start()
 
     def start(self):
+        if self.is_busy and self.is_busy():
+            messagebox.showinfo("PrivateLM", "Stop the model on the Master tab first: this computer "
+                                             "can be a master or a worker, not both.")
+            return
         try:
             port = int(self.port_var.get())
             if not 1 <= port <= 65535:
                 raise ValueError
         except ValueError:
-            messagebox.showerror("PrivateLM Worker", "The port must be a number from 1 to 65535.")
+            messagebox.showerror("PrivateLM", "The port must be a number from 1 to 65535.")
             return
         ram_mb = int(self.mem_var.get() * 1024)
         host = core.lan_address()
@@ -360,7 +334,7 @@ class WorkerApp:
                 stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True, bufsize=1,
                 creationflags=NO_WINDOW)
         except OSError as e:
-            messagebox.showerror("PrivateLM Worker", f"The worker couldn't start:\n\n{e}")
+            messagebox.showerror("PrivateLM", f"The worker couldn't start:\n\n{e}")
             self.server = None
             return
         self.port = port
@@ -443,14 +417,90 @@ class WorkerApp:
             self.set_dot("#c62828")
             self.status_var.set("Stopped")
             self.logs.put(error)
-            messagebox.showerror("PrivateLM Worker", error)
+            messagebox.showerror("PrivateLM", error)
         else:
             self.set_dot("#9e9e9e")
             self.status_var.set("Not sharing")
 
-    def on_close(self):
+    def shutdown(self):
         if self.server:
             self.stop()
+
+
+class App:
+    """The window: Worker and Master tabs over one log."""
+
+    def __init__(self, root: tk.Tk):
+        self.root = root
+        root.title("PrivateLM Laptop")
+        root.minsize(500, 0)
+        root.protocol("WM_DELETE_WINDOW", self.on_close)
+
+        style = ttk.Style()
+        if IS_WINDOWS and "vista" in style.theme_names():
+            style.theme_use("vista")
+        big = ("Segoe UI", 16, "bold") if IS_WINDOWS else ("", 16, "bold")
+        style.configure("Title.TLabel", font=big)
+        style.configure("Muted.TLabel", foreground="#666666")
+        style.configure("Status.TLabel", font=("Segoe UI", 11, "bold") if IS_WINDOWS else ("", 11, "bold"))
+
+        outer = ttk.Frame(root, padding=(14, 12, 14, 12))
+        outer.pack(fill="both", expand=True)
+        ttk.Label(outer, text="PrivateLM Laptop", style="Title.TLabel").pack(anchor="w", pady=(0, 8))
+
+        self.logs = queue.Queue()
+        notebook = ttk.Notebook(outer)
+        notebook.pack(fill="both", expand=True)
+        worker_frame, master_frame = ttk.Frame(notebook), ttk.Frame(notebook)
+        notebook.add(master_frame, text="  Master  ")
+        notebook.add(worker_frame, text="  Worker  ")
+        self.notebook = notebook
+
+        self.worker = WorkerTab(root, worker_frame, self.logs)
+        self.master = MasterTab(root, master_frame, self.logs,
+                                measure_cpu=lambda: measure(DEVICE_CPU)[2],
+                                find_server=find_server, keep_awake=keep_awake, no_window=NO_WINDOW)
+        self.worker.is_busy = lambda: self.master.running
+        self.master.is_busy = lambda: self.worker.server is not None
+
+        self.log_shown = tk.BooleanVar(value=False)
+        ttk.Checkbutton(outer, text="Show log", variable=self.log_shown, command=self.toggle_log)\
+            .pack(anchor="w", pady=(8, 0))
+        self.log_frame = ttk.Frame(outer)
+        self.log = tk.Text(self.log_frame, height=10, width=70, wrap="word", state="disabled",
+                           font=("Consolas", 9) if IS_WINDOWS else ("", 9))
+        scroll = ttk.Scrollbar(self.log_frame, command=self.log.yview)
+        self.log.configure(yscrollcommand=scroll.set)
+        self.log.pack(side="left", fill="both", expand=True)
+        scroll.pack(side="right", fill="y")
+        self.root.after(200, self.drain_logs)
+
+    def toggle_log(self):
+        if self.log_shown.get():
+            self.log_frame.pack(fill="both", expand=True, pady=(6, 0))
+        else:
+            self.log_frame.pack_forget()
+
+    def drain_logs(self):
+        lines = []
+        try:
+            while len(lines) < 500:
+                lines.append(self.logs.get_nowait())
+        except queue.Empty:
+            pass
+        if lines:
+            self.log.configure(state="normal")
+            self.log.insert("end", "\n".join(lines) + "\n")
+            count = int(self.log.index("end-1c").split(".")[0])
+            if count > 3000:
+                self.log.delete("1.0", f"{count - 3000}.0")
+            self.log.see("end")
+            self.log.configure(state="disabled")
+        self.root.after(200, self.drain_logs)
+
+    def on_close(self):
+        self.master.shutdown()
+        self.worker.shutdown()
         self.root.destroy()
 
 
@@ -462,7 +512,7 @@ def main():
         except Exception:  # noqa: BLE001
             pass
     root = tk.Tk()
-    WorkerApp(root)
+    App(root)
     root.mainloop()
 
 

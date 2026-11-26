@@ -31,6 +31,10 @@ HERE = Path(__file__).resolve().parent
 SERVICE_TYPE = "_privatelm._tcp.local."
 PROTOCOL = "rpc7"  # must match the phones (ClusterWorkerService.kt)
 DEFAULT_PORT = 50052
+# The llama.cpp release the app's tree (local_plugins/llama_flutter_android/
+# android/src/main/cpp/llama.cpp) comes from. The laptop master's llama-server
+# is built from it, so it speaks the phones' RPC protocol. Change both together.
+LLAMA_RELEASE = "b11157"
 
 
 def config_dir() -> Path:
@@ -82,6 +86,43 @@ def build(gpu: str, rebuild: bool) -> Path:
     subprocess.run(["cmake", "--build", str(build_dir), "--config", "Release", "-j",
                     str(os.cpu_count() or 4)], check=True)
     return binary_path(build_dir)
+
+
+def server_binary_path() -> Path:
+    build_dir = HERE / "build" / "server" / "bin"
+    name = "llama-server.exe" if platform.system() == "Windows" else "llama-server"
+    for candidate in (build_dir / name, build_dir / "Release" / name):
+        if candidate.exists():
+            return candidate
+    return build_dir / name
+
+
+def build_server(rebuild: bool = False, log=print) -> Path:
+    """llama.cpp's llama-server at LLAMA_RELEASE, with RPC, for running this
+    computer as the cluster master (from source; the Windows app ships it)."""
+    binary = server_binary_path()
+    if binary.exists() and not rebuild:
+        return binary
+    for tool in ("git", "cmake"):
+        if not shutil.which(tool):
+            raise RuntimeError(f"{tool} is needed to build llama-server the first time.")
+    src = HERE / "build" / f"llama.cpp-{LLAMA_RELEASE}"
+    if not src.exists():
+        log(f"Downloading llama.cpp {LLAMA_RELEASE}…")
+        subprocess.run(["git", "clone", "--quiet", "--depth", "1", "--branch", LLAMA_RELEASE,
+                        "https://github.com/ggml-org/llama.cpp", str(src)], check=True)
+    log("Building llama-server (a few minutes, first time only)…")
+    out = HERE / "build" / "server"
+    subprocess.run(["cmake", "-S", str(src), "-B", str(out), "-DCMAKE_BUILD_TYPE=Release",
+                    "-DGGML_RPC=ON", "-DLLAMA_CURL=OFF", "-DBUILD_SHARED_LIBS=OFF",
+                    "-DLLAMA_BUILD_TESTS=OFF", "-DLLAMA_BUILD_EXAMPLES=OFF",
+                    # The chat page is downloaded by build number; a shallow
+                    # clone can't count it.
+                    f"-DLLAMA_BUILD_NUMBER={LLAMA_RELEASE.lstrip('b')}"], check=True,
+                   capture_output=True)
+    subprocess.run(["cmake", "--build", str(out), "--config", "Release", "--target", "llama-server",
+                    "-j", str(os.cpu_count() or 4)], check=True, capture_output=True)
+    return server_binary_path()
 
 
 def lan_address() -> str:

@@ -1,7 +1,7 @@
-# Builds PrivateLM-Worker.exe: a Windows app that shares a laptop's GPU
-# (Vulkan) or CPU with a PrivateLM phone cluster. Download it from the run's
-# Artifacts section.
-name: Laptop worker (Windows)
+# Builds PrivateLM-Laptop.exe: a Windows app that runs a model on the laptop
+# with phones as workers (Master tab), or shares the laptop's GPU (Vulkan) or
+# CPU with a master phone (Worker tab). Download it from the run's Artifacts.
+name: Laptop app (Windows)
 
 on:
   workflow_dispatch:
@@ -53,6 +53,34 @@ jobs:
           cmake -S tools/laptop_worker -B build/vulkan $($env:CPU_FLAGS -split ' ') -DGGML_VULKAN=ON
           cmake --build build/vulkan --config Release -j 4
 
+      # The Master tab's llama-server comes from the llama.cpp release the
+      # app's tree is based on (LLAMA_RELEASE in privatelm_worker.py).
+      - name: Get llama.cpp for llama-server
+        shell: pwsh
+        run: |
+          $release = (Select-String -Path tools/laptop_worker/privatelm_worker.py -Pattern '^LLAMA_RELEASE = "(.+)"').Matches[0].Groups[1].Value
+          Add-Content $env:GITHUB_ENV "LLAMA_RELEASE=$release"
+          git clone --quiet --depth 1 --branch $release https://github.com/ggml-org/llama.cpp "$env:RUNNER_TEMP/llama.cpp"
+
+      - name: Check llama-server speaks the phones' protocol
+        shell: bash
+        run: |
+          app=local_plugins/llama_flutter_android/android/src/main/cpp/llama.cpp/ggml/include
+          up="$RUNNER_TEMP/llama.cpp/ggml/include"
+          diff "$app/ggml-rpc.h" "$up/ggml-rpc.h"
+          diff <(grep -o 'GGML_OP_[A-Z0-9_]*' "$app/ggml.h") <(grep -o 'GGML_OP_[A-Z0-9_]*' "$up/ggml.h")
+          echo "RPC protocol and ops match the app's llama.cpp"
+
+      - name: Build llama-server
+        shell: pwsh
+        run: |
+          $build = "$($env:LLAMA_RELEASE.TrimStart('b'))"
+          cmake -S "$env:RUNNER_TEMP/llama.cpp" -B build/server $($env:CPU_FLAGS -split ' ') `
+            -DGGML_RPC=ON -DBUILD_SHARED_LIBS=OFF -DLLAMA_CURL=OFF `
+            -DLLAMA_BUILD_TESTS=OFF -DLLAMA_BUILD_EXAMPLES=OFF "-DLLAMA_BUILD_NUMBER=$build"
+          cmake --build build/server --config Release --target llama-server -j 4
+          build/server/bin/Release/llama-server.exe --version
+
       - name: Check the workers run
         shell: pwsh
         run: |
@@ -64,21 +92,22 @@ jobs:
         with:
           python-version: '3.12'
 
-      - name: Package PrivateLM-Worker.exe
+      - name: Package PrivateLM-Laptop.exe
         shell: pwsh
         working-directory: tools/laptop_worker
         run: |
           python -m pip install --upgrade pip
           python -m pip install pyinstaller zeroconf qrcode psutil
-          python -m PyInstaller --noconfirm --onefile --windowed --name PrivateLM-Worker `
+          python -m PyInstaller --noconfirm --onefile --windowed --name PrivateLM-Laptop `
             --collect-submodules zeroconf `
+            --add-binary "../../build/server/bin/Release/llama-server.exe;bin/server" `
             --add-binary "../../build/cpu/Release/privatelm-worker.exe;bin/cpu" `
             --add-binary "../../build/vulkan/Release/privatelm-worker.exe;bin/vulkan" `
             worker_gui.py
-          Get-Item dist/PrivateLM-Worker.exe | Select-Object Name, Length
+          Get-Item dist/PrivateLM-Laptop.exe | Select-Object Name, Length
 
       - uses: actions/upload-artifact@v4
         with:
-          name: PrivateLM-Worker-windows
-          path: tools/laptop_worker/dist/PrivateLM-Worker.exe
+          name: PrivateLM-Laptop-windows
+          path: tools/laptop_worker/dist/PrivateLM-Laptop.exe
           if-no-files-found: error

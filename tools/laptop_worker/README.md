@@ -1,35 +1,60 @@
-# Laptop worker
+# Laptop app
 
-Lets a Mac, Linux or Windows laptop join a PrivateLM phone cluster as a
-**worker**, like a phone set to Worker. The master phone (iPhone or Android)
-puts part of the model's layers on the laptop's GPU (or CPU) over Wi-Fi.
+Lets a laptop join a PrivateLM phone cluster in either role:
 
-The worker is built from the app's own llama.cpp tree, so it speaks the same
-RPC protocol (`rpc7`) as the phones. Rebuild it (`--rebuild`) whenever that
-tree is updated, or the master will refuse to use the laptop.
+- **Master:** the laptop runs the model, with part of its layers on phones
+  set to Worker, and serves it as an OpenAI-compatible API. Chat with it from
+  the PrivateLM app (Custom API) or the laptop's browser.
+- **Worker:** the laptop lends its GPU (or CPU) to a master phone, like a
+  phone set to Worker.
+
+Both use llama.cpp at the release the app's own tree comes from (b11157), so
+they speak the phones' RPC protocol (`rpc7`).
 
 ## Windows app
 
 No Python or compiler needed:
 
-1. On GitHub, open **Actions → Laptop worker (Windows)**, pick the latest
-   green run (or **Run workflow** to start one), and download
-   **PrivateLM-Worker-windows** under Artifacts. Unzip it.
-2. Run `PrivateLM-Worker.exe`. It isn't signed, so Windows SmartScreen may
-   warn: click **More info → Run anyway**.
-3. Pick the device and how much memory to offer, then click **Start sharing**.
-   When Windows Firewall asks, allow **private networks**.
-4. On the master phone, open **Phone cluster** and tap **Find nearby**, or
-   scan the code in the window. The window shows when the master connects.
+1. On GitHub, open **Actions → Laptop app (Windows)**, pick the latest green
+   run (or **Run workflow** to start one), and download
+   **PrivateLM-Laptop-windows** under Artifacts. Unzip it.
+2. Run `PrivateLM-Laptop.exe`. It isn't signed, so Windows SmartScreen may
+   warn: click **More info → Run anyway**. When Windows Firewall asks, allow
+   **private networks**.
 
-It uses the laptop's GPU through Vulkan (NVIDIA, AMD and Intel, with an
-up-to-date graphics driver) and falls back to the CPU. The computer is kept
-from sleeping while sharing; also set closing the lid to "Do nothing" in the
-power settings if you want to close it. To run the window from source
-instead: `pip install zeroconf qrcode psutil`, then
-`python tools/laptop_worker/worker_gui.py`.
+### Laptop as master
 
-## Command line
+1. On each phone, set **Phone cluster** to **Worker** and keep PrivateLM open.
+2. On the **Master** tab, click **Browse…** and pick a `.gguf` model, then
+   **Find nearby** to list the phones (or **Add by IP**). Click **Use** to
+   include or leave out a phone.
+3. Click **Start model**. When it says **Ready**, it shows a Base URL, API key
+   and Model name.
+4. In PrivateLM on your phone: **Models → Cloud → Custom API**, enter those
+   three, and chat. Or click **Open chat in this computer's browser**.
+
+The laptop keeps as many layers as fit in its free memory (it's faster and
+has no Wi-Fi hop) and puts the rest on the phones, sized by each phone's free
+memory and speed. A model that fits on the laptop runs there alone, because
+every word would otherwise cross the Wi-Fi to each phone; tick **Use the
+phones even if the model fits here** to share it anyway. The master runs on
+the laptop's CPU.
+
+### Laptop as worker
+
+On the **Worker** tab, pick the device and how much memory to offer, then
+click **Start sharing**. On the master phone, open **Phone cluster** and tap
+**Find nearby**, or scan the code in the window. The window shows when the
+master connects. It uses the GPU through Vulkan (NVIDIA, AMD and Intel, with
+an up-to-date driver) and falls back to the CPU.
+
+In both roles the computer is kept from sleeping while it runs; also set
+closing the lid to "Do nothing" in the power settings if you want to close
+it. To run the window from source instead: `pip install zeroconf qrcode
+psutil`, then `python tools/laptop_worker/worker_gui.py` (the first master
+start downloads and builds llama-server, which needs git and CMake).
+
+## Command line (worker only)
 
 ### Requirements
 
