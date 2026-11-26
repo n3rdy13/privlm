@@ -77,7 +77,8 @@ def measure(choice: str):
     binary that works, keeping a GPU only if one was found (or the user
     asked for one)."""
     errors = []
-    for binary, args in candidate_binaries(choice):
+    candidates = candidate_binaries(choice)
+    for i, (binary, args) in enumerate(candidates):
         try:
             run = subprocess.run([str(binary), "--info", *args], capture_output=True, text=True,
                                  timeout=120, creationflags=NO_WINDOW)
@@ -88,7 +89,8 @@ def measure(choice: str):
         except (OSError, ValueError, subprocess.TimeoutExpired) as e:
             errors.append(str(e))
             continue
-        if choice == DEVICE_AUTO and info["type"] != "gpu" and "--cpu" not in args:
+        if (choice == DEVICE_AUTO and info["type"] != "gpu" and "--cpu" not in args
+                and i + 1 < len(candidates)):
             continue  # the GPU build found no GPU: use the CPU build
         return binary, args, info
     raise RuntimeError("The worker couldn't start on this computer."

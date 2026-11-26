@@ -8,14 +8,37 @@ The worker is built from the app's own llama.cpp tree, so it speaks the same
 RPC protocol (`rpc7`) as the phones. Rebuild it (`--rebuild`) whenever that
 tree is updated, or the master will refuse to use the laptop.
 
-## Requirements
+## Windows app
+
+No Python or compiler needed:
+
+1. On GitHub, open **Actions → Laptop worker (Windows)**, pick the latest
+   green run (or **Run workflow** to start one), and download
+   **PrivateLM-Worker-windows** under Artifacts. Unzip it.
+2. Run `PrivateLM-Worker.exe`. It isn't signed, so Windows SmartScreen may
+   warn: click **More info → Run anyway**.
+3. Pick the device and how much memory to offer, then click **Start sharing**.
+   When Windows Firewall asks, allow **private networks**.
+4. On the master phone, open **Phone cluster** and tap **Find nearby**, or
+   scan the code in the window. The window shows when the master connects.
+
+It uses the laptop's GPU through Vulkan (NVIDIA, AMD and Intel, with an
+up-to-date graphics driver) and falls back to the CPU. The computer is kept
+from sleeping while sharing; also set closing the lid to "Do nothing" in the
+power settings if you want to close it. To run the window from source
+instead: `pip install zeroconf qrcode psutil`, then
+`python tools/laptop_worker/worker_gui.py`.
+
+## Command line
+
+### Requirements
 
 - Python 3.8+, CMake 3.14+ and a C++ compiler (Xcode Command Line Tools on a
   Mac, `build-essential` on Linux, Visual Studio with C++ on Windows).
 - Optional: `pip install zeroconf qrcode`. `zeroconf` lets the master's
   "Find nearby" see the laptop; `qrcode` prints the QR code in the terminal.
 
-## Run
+### Run
 
 From the repository root:
 
