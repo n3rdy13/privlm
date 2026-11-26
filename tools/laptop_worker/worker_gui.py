@@ -313,7 +313,7 @@ class WorkerApp:
         info = self.info
         free_gb = info["usableMb"] / 1024
         kind = "GPU" if info["type"] == "gpu" else "CPU"
-        self.device_info_var.set(f"{info['description'] or info['device']} ({kind}) · "
+        self.device_info_var.set(f"{info['description'].strip() or info['device']} ({kind}) · "
                                  f"{free_gb:.1f} GB free · {info['bandwidth']:.1f} GB/s")
         if info["type"] == "gpu" and DEVICE_GPU not in self.device_box["values"]:
             self.device_box.configure(values=[DEVICE_AUTO, DEVICE_GPU, DEVICE_CPU])

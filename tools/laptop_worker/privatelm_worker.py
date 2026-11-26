@@ -166,7 +166,7 @@ def main() -> None:
     cache.mkdir(exist_ok=True)
     server = subprocess.Popen([str(binary), "--port", str(args.port), "--cache", str(cache), *common])
 
-    print(f"\nSharing {info['description'] or info['device']} ({info['type'].upper()}): "
+    print(f"\nSharing {info['description'].strip() or info['device']} ({info['type'].upper()}): "
           f"{ram_mb / 1024:.1f} GB free, {info['bandwidth']:.1f} GB/s, at {host}:{args.port}")
     if host == "127.0.0.1":
         print("This computer doesn't seem to be on a network: connect it to the phones' Wi-Fi.")
