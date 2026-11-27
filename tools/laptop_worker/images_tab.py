@@ -84,15 +84,12 @@ def find_phones(known_hosts=(), log=None) -> List[dict]:
 
     found: Dict[tuple, dict] = {}
     try:
-        for f in discovery.browse(SERVICE_TYPE, 4.0, log=log):
+        for f in discovery.find_all(SERVICE_TYPE, PHONE_PORT, known_hosts, log=log):
             found[(f["host"], f["port"])] = f
-        for host in sorted(set(known_hosts)):
-            for f in discovery.query_host(host, SERVICE_TYPE, log=log):
-                found.setdefault((f["host"], f["port"]), f)
     except ImportError:
         if log:
-            log("Find nearby needs the zeroconf package; asking known phones only")
-        for host in known_hosts:
+            log("Find nearby needs the zeroconf package; scanning the network instead")
+        for host in set(known_hosts) | set(discovery.scan_subnet(PHONE_PORT, log=log)):
             found.setdefault((host, PHONE_PORT), {"host": host, "port": PHONE_PORT, "props": {},
                                                   "instance": host})
     phones = []

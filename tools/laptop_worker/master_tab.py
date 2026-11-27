@@ -201,12 +201,8 @@ def discover_workers(known_hosts=(), seconds: float = 4.0, log=None) -> List[dic
     that drop multicast between some devices."""
     import discovery
 
-    found = {}
-    for f in discovery.browse(core.SERVICE_TYPE, seconds, log=log):
-        found[(f["host"], f["port"])] = f
-    for host in sorted(set(known_hosts)):
-        for f in discovery.query_host(host, core.SERVICE_TYPE, log=log):
-            found.setdefault((f["host"], f["port"]), f)
+    found = {(f["host"], f["port"]): f
+             for f in discovery.find_all(core.SERVICE_TYPE, core.DEFAULT_PORT, known_hosts, log=log)}
     own = core.worker_id()
     workers = [_worker_from(f) for f in found.values()]
     return [w for w in workers if w.get("id") != own]
