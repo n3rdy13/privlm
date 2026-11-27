@@ -7,8 +7,7 @@ Lets a laptop join a PrivateLM phone cluster in either role:
   the PrivateLM app (Custom API) or the laptop's browser.
 - **Images:** the laptop makes images with a Stable Diffusion model
   (`.safetensors`, `.ckpt` or `.gguf`, such as CyberRealistic), like the
-  app's image generation. Image models run on one device: the phone cluster
-  can't split them.
+  app's image generation, with phones making images at the same time.
 - **Worker:** the laptop lends its GPU (or CPU) to a master phone, like a
   phone set to Worker.
 
@@ -48,11 +47,30 @@ the laptop's CPU.
 
 On the **Images** tab, click **Browse…** and pick the model, then **Load
 model**. Write a prompt and click **Generate**. Each image is saved to
-`Pictures\PrivateLM`. Size, steps, CFG, sampler and seed work as in other
-Stable Diffusion apps; SD 1.5 models like CyberRealistic look best at 512 ×
-512 or 512 × 768 with 20–30 steps. **Automatic** uses the GPU (Vulkan) if
-the laptop has one, else the CPU; integrated graphics can be faster or
-slower than the CPU, so try both.
+`Pictures\PrivateLM` and added to the gallery; click a thumbnail to see it
+big. Size, steps, CFG, sampler and seed work as in other Stable Diffusion
+apps; SD 1.5 models like CyberRealistic look best at 512 × 512 or 512 × 768
+with 20–30 steps. **Automatic** uses the GPU (Vulkan) if the laptop has one,
+else the CPU; integrated graphics can be faster or slower than the CPU, so
+try both.
+
+**Phones make images too.** On each phone, load the same image model in
+PrivateLM, then open **Phone cluster** and turn on **Images for a laptop**.
+On the laptop, click **Find nearby** under **Devices making images** (or
+**Add by IP**). Every ticked device takes the next image as soon as it's
+free, so the laptop and phones work at the same time and the fastest make
+the most. Two ways to fill the queue:
+
+- **Variations of one prompt:** *Images* copies of one prompt, each with its
+  own seed. Seed −1 picks random seeds; a number N gives N, N+1, … so you can
+  make the same set again.
+- **Queue: one prompt per line:** each line is a prompt, made *Each* times.
+
+The laptop doesn't need its own model loaded to use the phones. Phones
+render at most 512 × 768. Each phone uses the model loaded in its own app,
+shown in the Model column, so load the same one everywhere for matching
+results. Anyone on the Wi-Fi can send a phone jobs while Images for a laptop
+is on.
 
 ### Laptop as worker
 

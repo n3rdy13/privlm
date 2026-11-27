@@ -1,7 +1,13 @@
 """Images tab: Stable Diffusion image models (.safetensors, .ckpt, .gguf), the
-kind PrivateLM's image generation uses, run on this computer with
-stable-diffusion.cpp's sd-server (the same stable-diffusion.cpp the app
-pins). Image models run on one device: the phone cluster can't split them.
+kind PrivateLM's image generation uses.
+
+This computer runs them with stable-diffusion.cpp's sd-server (the same
+stable-diffusion.cpp the app pins), and phones with "Images for a laptop"
+turned on make images too: each device takes the next job as soon as it's
+free, so several images are made at once. Two ways to fill the queue:
+variations (one prompt, many seeds) and a prompt queue (one prompt per line).
+
+Phones and sd-server speak the same A1111-style POST /sdapi/v1/txt2img.
 """
 
 import base64
@@ -9,24 +15,34 @@ import json
 import os
 import queue
 import random
+import socket
 import subprocess
 import threading
 import time
 import tkinter as tk
 import urllib.error
 import urllib.request
+from dataclasses import dataclass, field
 from pathlib import Path
 from tkinter import filedialog, messagebox, ttk
-from typing import Callable, Optional
+from typing import Callable, Dict, List, Optional
 
 import privatelm_worker as core
 
-PORT = 7861
+PORT = 7861                        # this computer's sd-server (localhost only)
+PHONE_PORT = 50061                 # ImageWorkerService in the phone app
+SERVICE_TYPE = "_privatelm-img._tcp.local."
+PROTOCOL = "img1"
 SIZES = ["512 × 512", "512 × 768", "768 × 512", "384 × 384", "768 × 768"]
 SAMPLERS = ["Euler a", "Euler", "DPM++ 2M", "DDIM", "LCM", "Heun"]
 DEVICE_AUTO = "Automatic (GPU if it has one)"
 DEVICE_CPU = "CPU only"
-PREVIEW = 400  # px, the preview's longest side
+MODE_VARIATIONS = "variations"
+MODE_QUEUE = "queue"
+PREVIEW = 360   # px, the big preview's longest side
+THUMB = 76      # px, gallery thumbnails
+THUMB_COLS = 4
+LOCAL_ID = "local"
 
 
 def pictures_dir() -> Path:
@@ -34,6 +50,95 @@ def pictures_dir() -> Path:
     path = (base if base.exists() else Path.home()) / "PrivateLM"
     path.mkdir(parents=True, exist_ok=True)
     return path
+
+
+def fit_photo(photo: tk.PhotoImage, box: int) -> tk.PhotoImage:
+    """Scales a PhotoImage to fit `box` (Tk scales by whole-number ratios)."""
+    longest = max(photo.width(), photo.height())
+    if longest <= box:
+        return photo
+    best = (1, -(-longest // box))
+    for zoom in (2, 3):
+        shrink = -(-longest * zoom // box)
+        if zoom / shrink > best[0] / best[1]:
+            best = (zoom, shrink)
+    zoom, shrink = best
+    if zoom > 1:
+        photo = photo.zoom(zoom, zoom)
+    return photo.subsample(shrink, shrink)
+
+
+def phone_status(host: str, port: int, timeout: float = 3.0) -> Optional[dict]:
+    try:
+        with urllib.request.urlopen(f"http://{host}:{port}/status", timeout=timeout) as r:
+            return json.load(r)
+    except (urllib.error.URLError, OSError, ValueError):
+        return None
+
+
+def find_phones(known_hosts=(), log=None) -> List[dict]:
+    """Phones with "Images for a laptop" on: a Wi-Fi search, plus each known
+    address asked directly, then each one's live status."""
+    import discovery
+
+    found: Dict[tuple, dict] = {}
+    try:
+        for f in discovery.browse(SERVICE_TYPE, 4.0, log=log):
+            found[(f["host"], f["port"])] = f
+        for host in sorted(set(known_hosts)):
+            for f in discovery.query_host(host, SERVICE_TYPE, log=log):
+                found.setdefault((f["host"], f["port"]), f)
+    except ImportError:
+        if log:
+            log("Find nearby needs the zeroconf package; asking known phones only")
+        for host in known_hosts:
+            found.setdefault((host, PHONE_PORT), {"host": host, "port": PHONE_PORT, "props": {},
+                                                  "instance": host})
+    phones = []
+    for (host, port), f in found.items():
+        status = phone_status(host, port)
+        props = f.get("props", {})
+        phones.append({
+            "id": props.get("id") or f"{host}:{port}", "host": host, "port": port,
+            "name": (status or {}).get("name") or props.get("model") or host,
+            "model": (status or {}).get("model") or props.get("img") or "",
+            "online": status is not None, "loaded": bool((status or {}).get("loaded")),
+        })
+    return phones
+
+
+@dataclass
+class Job:
+    index: int
+    prompt: str
+    seed: int
+
+
+@dataclass
+class Device:
+    id: str
+    name: str
+    url: str           # base URL, e.g. http://192.168.1.5:50061
+    model: str = ""
+    use: bool = True
+    status: str = ""
+    made: int = 0
+    host: str = ""
+    port: int = 0
+
+
+@dataclass
+class Result:
+    png: bytes
+    job: Job
+    device: str
+    seconds: float
+    width: int
+    height: int
+    seed: int
+    path: Optional[Path] = None
+    photo: Optional[tk.PhotoImage] = None
+    thumb: Optional[tk.PhotoImage] = None
 
 
 class ImagesTab:
@@ -51,12 +156,17 @@ class ImagesTab:
         self.no_window = no_window
         self.server = None
         self.ready = False
-        self.generating = False
-        self.photo = None
-        self.last_png: Optional[bytes] = None
+        self.variant = "cpu"
+        self.tail: List[str] = []
+        self.phones: List[dict] = []          # saved phones (id, name, host, port, use)
+        self.local_use = True
+        self.results: List[Result] = []
+        self.selected: Optional[Result] = None
+        self.run: Optional[dict] = None       # the running batch
         self.state_path = core.config_dir() / "images.json"
         self.build_ui()
         self.load_state()
+        self.refresh_devices()
 
     # State ------------------------------------------------------------------
 
@@ -69,16 +179,22 @@ class ImagesTab:
             self.model_var.set(state["model"])
             self.describe_model()
         for key, var in (("size", self.size_var), ("steps", self.steps_var), ("cfg", self.cfg_var),
-                         ("sampler", self.sampler_var), ("negative", self.neg_var), ("device", self.device_var)):
+                         ("sampler", self.sampler_var), ("negative", self.neg_var), ("device", self.device_var),
+                         ("mode", self.mode_var), ("count", self.count_var), ("seed", self.seed_var)):
             if key in state:
                 var.set(state[key])
+        self.phones = state.get("phones", [])
+        self.local_use = state.get("local_use", True)
         if state.get("prompt"):
             self.prompt.insert("1.0", state["prompt"])
+        self.on_mode()
 
     def save_state(self):
         state = {"model": self.model_var.get(), "size": self.size_var.get(), "steps": self.steps_var.get(),
                  "cfg": self.cfg_var.get(), "sampler": self.sampler_var.get(), "negative": self.neg_var.get(),
-                 "device": self.device_var.get(), "prompt": self.prompt.get("1.0", "end").strip()}
+                 "device": self.device_var.get(), "mode": self.mode_var.get(), "count": self.count_var.get(),
+                 "seed": self.seed_var.get(), "prompt": self.prompt.get("1.0", "end").strip(),
+                 "phones": self.phones, "local_use": self.local_use}
         try:
             self.state_path.write_text(json.dumps(state, indent=1))
         except OSError:
@@ -87,99 +203,286 @@ class ImagesTab:
     # UI ---------------------------------------------------------------------
 
     def build_ui(self):
-        outer = ttk.Frame(self.container, padding=16)
+        outer = ttk.Frame(self.container, padding=14)
         outer.pack(fill="both", expand=True)
-        outer.columnconfigure(1, weight=1)
+        left = ttk.Frame(outer)
+        left.grid(row=0, column=0, sticky="nsew")
+        left.columnconfigure(1, weight=1)
+        right = ttk.Frame(outer)
+        right.grid(row=0, column=1, sticky="n", padx=(14, 0))
 
-        ttk.Label(outer, text="Make images with a Stable Diffusion model (.safetensors), like the "
-                              "app's image generation.", style="Muted.TLabel", wraplength=460,
-                  justify="left").grid(row=0, column=0, columnspan=3, sticky="w", pady=(0, 12))
-
-        status = ttk.Frame(outer)
-        status.grid(row=1, column=0, columnspan=3, sticky="ew", pady=(0, 10))
+        status = ttk.Frame(left)
+        status.grid(row=0, column=0, columnspan=3, sticky="ew", pady=(0, 8))
         self.dot = tk.Canvas(status, width=14, height=14, highlightthickness=0, bd=0)
         self.dot.pack(side="left", padx=(0, 8))
-        self.status_var = tk.StringVar(value="No image model loaded")
+        self.status_var = tk.StringVar(value="No image model loaded here")
         ttk.Label(status, textvariable=self.status_var, style="Status.TLabel").pack(side="left")
         self.set_dot("#9e9e9e")
 
-        ttk.Label(outer, text="Model").grid(row=2, column=0, sticky="w", pady=4)
+        # This computer's model
+        ttk.Label(left, text="Model").grid(row=1, column=0, sticky="w", pady=3)
         self.model_var = tk.StringVar()
-        ttk.Entry(outer, textvariable=self.model_var, state="readonly").grid(row=2, column=1, sticky="ew", pady=4)
-        self.browse_btn = ttk.Button(outer, text="Browse…", command=self.browse)
-        self.browse_btn.grid(row=2, column=2, sticky="e", padx=(6, 0), pady=4)
-        self.model_desc = tk.StringVar(value="Choose a Stable Diffusion model: .safetensors, .ckpt or .gguf")
-        ttk.Label(outer, textvariable=self.model_desc, style="Muted.TLabel")\
-            .grid(row=3, column=1, columnspan=2, sticky="w")
-
-        ttk.Label(outer, text="Use").grid(row=4, column=0, sticky="w", pady=4)
+        ttk.Entry(left, textvariable=self.model_var, state="readonly").grid(row=1, column=1, sticky="ew", pady=3)
+        self.browse_btn = ttk.Button(left, text="Browse…", command=self.browse)
+        self.browse_btn.grid(row=1, column=2, sticky="e", padx=(6, 0), pady=3)
+        self.model_desc = tk.StringVar(value="A Stable Diffusion model: .safetensors, .ckpt or .gguf")
+        ttk.Label(left, textvariable=self.model_desc, style="Muted.TLabel")\
+            .grid(row=2, column=1, columnspan=2, sticky="w")
+        row = ttk.Frame(left)
+        row.grid(row=3, column=0, columnspan=3, sticky="ew", pady=(4, 6))
+        row.columnconfigure(1, weight=1)
+        ttk.Label(row, text="Use").grid(row=0, column=0, sticky="w", padx=(0, 8))
         self.device_var = tk.StringVar(value=DEVICE_AUTO)
-        self.device_box = ttk.Combobox(outer, textvariable=self.device_var, state="readonly",
-                                       values=[DEVICE_AUTO, DEVICE_CPU])
-        self.device_box.grid(row=4, column=1, columnspan=2, sticky="ew", pady=4)
+        self.device_box = ttk.Combobox(row, textvariable=self.device_var, state="readonly",
+                                       values=[DEVICE_AUTO, DEVICE_CPU], width=26)
+        self.device_box.grid(row=0, column=1, sticky="w")
+        self.load_btn = ttk.Button(row, text="Load model", command=self.toggle)
+        self.load_btn.grid(row=0, column=2, sticky="e")
 
-        self.load_btn = ttk.Button(outer, text="Load model", command=self.toggle)
-        self.load_btn.grid(row=5, column=0, columnspan=3, sticky="ew", pady=(10, 8), ipady=3)
+        # Devices
+        df = ttk.LabelFrame(left, text="Devices making images", padding=8)
+        df.grid(row=4, column=0, columnspan=3, sticky="ew", pady=(4, 6))
+        df.columnconfigure(0, weight=1)
+        self.tree = ttk.Treeview(df, columns=("use", "name", "model", "status"), show="headings",
+                                 height=4, selectmode="browse")
+        for col, text, width, stretch in (("use", "Use", 38, False), ("name", "Device", 110, False),
+                                          ("model", "Model", 120, True), ("status", "Status", 120, True)):
+            self.tree.heading(col, text=text)
+            self.tree.column(col, width=width, anchor="center" if col == "use" else "w", stretch=stretch)
+        self.tree.grid(row=0, column=0, columnspan=4, sticky="ew")
+        self.tree.bind("<ButtonRelease-1>", self.on_tree_click)
+        self.find_btn = ttk.Button(df, text="Find nearby", command=self.find_nearby)
+        self.find_btn.grid(row=1, column=0, sticky="w", pady=(6, 0))
+        self.ip_var = tk.StringVar()
+        self.ip_entry = ttk.Entry(df, textvariable=self.ip_var, width=16)
+        self.ip_entry.grid(row=1, column=1, sticky="e", padx=(6, 0), pady=(6, 0))
+        self.ip_entry.bind("<Return>", lambda _: self.add_by_ip())
+        self.add_btn = ttk.Button(df, text="Add by IP", command=self.add_by_ip)
+        self.add_btn.grid(row=1, column=2, sticky="e", padx=(6, 0), pady=(6, 0))
+        self.remove_btn = ttk.Button(df, text="Remove", command=self.remove_selected)
+        self.remove_btn.grid(row=1, column=3, sticky="e", padx=(6, 0), pady=(6, 0))
+        self.devices_hint = tk.StringVar(
+            value="On each phone: Phone cluster → Images for a laptop, with an image model loaded.")
+        ttk.Label(df, textvariable=self.devices_hint, style="Muted.TLabel", wraplength=440,
+                  justify="left").grid(row=2, column=0, columnspan=4, sticky="w", pady=(4, 0))
 
-        # Generate
-        gen = ttk.LabelFrame(outer, text="Image", padding=10)
-        gen.grid(row=6, column=0, columnspan=3, sticky="nsew")
+        # What to make
+        gen = ttk.LabelFrame(left, text="What to make", padding=8)
+        gen.grid(row=5, column=0, columnspan=3, sticky="ew")
         gen.columnconfigure(1, weight=1)
-        ttk.Label(gen, text="Prompt").grid(row=0, column=0, sticky="nw", pady=2)
-        self.prompt = tk.Text(gen, height=3, width=40, wrap="word",
+        modes = ttk.Frame(gen)
+        modes.grid(row=0, column=0, columnspan=4, sticky="w", pady=(0, 4))
+        self.mode_var = tk.StringVar(value=MODE_VARIATIONS)
+        ttk.Radiobutton(modes, text="Variations of one prompt", value=MODE_VARIATIONS,
+                        variable=self.mode_var, command=self.on_mode).pack(side="left", padx=(0, 14))
+        ttk.Radiobutton(modes, text="Queue: one prompt per line", value=MODE_QUEUE,
+                        variable=self.mode_var, command=self.on_mode).pack(side="left")
+        self.prompt_label = tk.StringVar(value="Prompt")
+        ttk.Label(gen, textvariable=self.prompt_label).grid(row=1, column=0, sticky="nw", pady=2)
+        self.prompt = tk.Text(gen, height=4, width=40, wrap="word",
                               font=("Segoe UI", 10) if os.name == "nt" else ("", 10))
-        self.prompt.grid(row=0, column=1, columnspan=3, sticky="ew", pady=2)
-        ttk.Label(gen, text="Avoid").grid(row=1, column=0, sticky="w", pady=2)
+        self.prompt.grid(row=1, column=1, columnspan=3, sticky="ew", pady=2)
+        ttk.Label(gen, text="Avoid").grid(row=2, column=0, sticky="w", pady=2)
         self.neg_var = tk.StringVar(value="blurry, low quality, deformed")
-        ttk.Entry(gen, textvariable=self.neg_var).grid(row=1, column=1, columnspan=3, sticky="ew", pady=2)
+        ttk.Entry(gen, textvariable=self.neg_var).grid(row=2, column=1, columnspan=3, sticky="ew", pady=2)
 
         self.size_var = tk.StringVar(value=SIZES[0])
         self.steps_var = tk.StringVar(value="20")
         self.cfg_var = tk.StringVar(value="7")
         self.sampler_var = tk.StringVar(value=SAMPLERS[0])
         self.seed_var = tk.StringVar(value="-1")
-        rows = (
+        self.count_var = tk.StringVar(value="4")
+        self.count_label = tk.StringVar(value="Images")
+        grid = (
             (("Size", ttk.Combobox(gen, textvariable=self.size_var, values=SIZES, width=10, state="readonly")),
              ("Steps", ttk.Spinbox(gen, textvariable=self.steps_var, from_=1, to=80, width=5))),
             (("Sampler", ttk.Combobox(gen, textvariable=self.sampler_var, values=SAMPLERS, width=10,
                                       state="readonly")),
              ("CFG", ttk.Spinbox(gen, textvariable=self.cfg_var, from_=1, to=20, increment=0.5, width=5))),
+            (("Seed", ttk.Entry(gen, textvariable=self.seed_var, width=12)),
+             (self.count_label, ttk.Spinbox(gen, textvariable=self.count_var, from_=1, to=100, width=5))),
         )
-        for r, row in enumerate(rows, 2):
-            for c, (label, widget) in enumerate(row):
-                ttk.Label(gen, text=label).grid(row=r, column=c * 2, sticky="w", pady=2, padx=(0, 6))
+        for r, pair in enumerate(grid, 3):
+            for c, (label, widget) in enumerate(pair):
+                if isinstance(label, tk.StringVar):
+                    ttk.Label(gen, textvariable=label).grid(row=r, column=c * 2, sticky="w", pady=2, padx=(0, 6))
+                else:
+                    ttk.Label(gen, text=label).grid(row=r, column=c * 2, sticky="w", pady=2, padx=(0, 6))
                 widget.grid(row=r, column=c * 2 + 1, sticky="w", pady=2, padx=(0, 12))
-        ttk.Label(gen, text="Seed").grid(row=4, column=0, sticky="w", pady=2)
-        seed_row = ttk.Frame(gen)
-        seed_row.grid(row=4, column=1, columnspan=3, sticky="w", pady=2)
-        ttk.Entry(seed_row, textvariable=self.seed_var, width=12).pack(side="left")
-        ttk.Label(seed_row, text="−1 = random", style="Muted.TLabel").pack(side="left", padx=(8, 0))
-
-        buttons = ttk.Frame(gen)
-        buttons.grid(row=5, column=0, columnspan=4, sticky="ew", pady=(8, 4))
-        self.gen_btn = ttk.Button(buttons, text="Generate", command=self.generate)
-        self.gen_btn.pack(side="left")
-        self.gen_btn.state(["disabled"])
-        self.save_btn = ttk.Button(buttons, text="Save as…", command=self.save_as)
-        self.save_btn.pack(side="left", padx=(8, 0))
-        self.save_btn.state(["disabled"])
-        ttk.Button(buttons, text="Open folder", command=self.open_folder).pack(side="left", padx=(8, 0))
-        self.gen_status = tk.StringVar(value="")
-        ttk.Label(gen, textvariable=self.gen_status, style="Muted.TLabel", wraplength=460, justify="left")\
+        self.seed_hint = tk.StringVar(value="−1: a random seed for each image")
+        ttk.Label(gen, textvariable=self.seed_hint, style="Muted.TLabel")\
             .grid(row=6, column=0, columnspan=4, sticky="w")
 
-        preview = ttk.LabelFrame(outer, text="Preview", padding=8)
-        preview.grid(row=1, column=3, rowspan=6, sticky="n", padx=(14, 0))
+        buttons = ttk.Frame(gen)
+        buttons.grid(row=7, column=0, columnspan=4, sticky="ew", pady=(8, 2))
+        self.gen_btn = ttk.Button(buttons, text="Generate", command=self.generate)
+        self.gen_btn.pack(side="left")
+        self.stop_btn = ttk.Button(buttons, text="Stop", command=self.stop_run)
+        self.stop_btn.pack(side="left", padx=(8, 0))
+        self.stop_btn.state(["disabled"])
+        ttk.Button(buttons, text="Open folder", command=self.open_folder).pack(side="left", padx=(8, 0))
+        self.gen_status = tk.StringVar(value="")
+        ttk.Label(gen, textvariable=self.gen_status, style="Muted.TLabel", wraplength=440, justify="left")\
+            .grid(row=8, column=0, columnspan=4, sticky="w")
+
+        # Preview + gallery
+        preview = ttk.LabelFrame(right, text="Preview", padding=8)
+        preview.pack(fill="x")
         self.canvas = tk.Canvas(preview, width=PREVIEW, height=PREVIEW, bg="#eeeeee", highlightthickness=0)
         self.canvas.pack()
-        self.canvas.create_text(PREVIEW // 2, PREVIEW // 2, text="Your image appears here", fill="#888888")
-        gen.grid_configure(row=6)
+        self.canvas.create_text(PREVIEW // 2, PREVIEW // 2, text="Your images appear here", fill="#888888")
+        self.caption = tk.StringVar(value="")
+        ttk.Label(preview, textvariable=self.caption, style="Muted.TLabel", wraplength=PREVIEW)\
+            .pack(anchor="w", pady=(4, 0))
+        self.save_btn = ttk.Button(preview, text="Save as…", command=self.save_as)
+        self.save_btn.pack(anchor="w", pady=(4, 0))
+        self.save_btn.state(["disabled"])
+
+        gal = ttk.LabelFrame(right, text="Gallery", padding=6)
+        gal.pack(fill="both", expand=True, pady=(8, 0))
+        width = THUMB_COLS * (THUMB + 6)
+        self.gallery = tk.Canvas(gal, width=width, height=2 * (THUMB + 6), highlightthickness=0)
+        scroll = ttk.Scrollbar(gal, orient="vertical", command=self.gallery.yview)
+        self.gallery.configure(yscrollcommand=scroll.set)
+        self.gallery.pack(side="left", fill="both", expand=True)
+        scroll.pack(side="right", fill="y")
+        self.gallery.bind("<Button-1>", self.on_gallery_click)
 
     def set_dot(self, color: str):
         self.dot.delete("all")
         self.dot.create_oval(2, 2, 12, 12, fill=color, outline=color)
 
-    # Model ------------------------------------------------------------------
+    def on_mode(self):
+        if self.mode_var.get() == MODE_QUEUE:
+            self.prompt_label.set("Prompts")
+            self.count_label.set("Each")
+            self.seed_hint.set("−1: a random seed for each image. One prompt per line.")
+        else:
+            self.prompt_label.set("Prompt")
+            self.count_label.set("Images")
+            self.seed_hint.set("−1: a random seed for each image; a number N gives seeds N, N+1, …")
+
+    # Devices ----------------------------------------------------------------
+
+    def devices(self) -> List[Device]:
+        """This computer (if its model is loaded) and the saved phones."""
+        out = []
+        local_name = Path(self.model_var.get()).name if self.model_var.get() else ""
+        out.append(Device(LOCAL_ID, "This computer", f"http://127.0.0.1:{PORT}", local_name,
+                          self.local_use))
+        for p in self.phones:
+            out.append(Device(p["id"], p["name"], f"http://{p['host']}:{p['port']}", p.get("model", ""),
+                              p.get("use", True), host=p["host"], port=p["port"]))
+        return out
+
+    def refresh_devices(self, statuses: Optional[Dict[str, str]] = None):
+        statuses = statuses or {}
+        self.tree.delete(*self.tree.get_children())
+        for d in self.devices():
+            if d.id == LOCAL_ID:
+                default = ("Ready" if self.ready else "Model not loaded")
+            else:
+                p = next((x for x in self.phones if x["id"] == d.id), {})
+                default = ("Ready" if p.get("loaded") else "No model loaded") if p.get("online") \
+                    else "Not reachable" if "online" in p else ""
+            self.tree.insert("", "end", iid=d.id, values=("☑" if d.use else "☐", d.name, d.model,
+                                                         statuses.get(d.id, default)))
+
+    def on_tree_click(self, event):
+        if self.run or self.tree.identify_column(event.x) != "#1":
+            return
+        iid = self.tree.identify_row(event.y)
+        if not iid:
+            return
+        if iid == LOCAL_ID:
+            self.local_use = not self.local_use
+        else:
+            for p in self.phones:
+                if p["id"] == iid:
+                    p["use"] = not p.get("use", True)
+        self.refresh_devices()
+        self.save_state()
+
+    def remove_selected(self):
+        sel = self.tree.selection()
+        if sel and sel[0] != LOCAL_ID and not self.run:
+            self.phones = [p for p in self.phones if p["id"] != sel[0]]
+            self.refresh_devices()
+            self.save_state()
+
+    def merge_phone(self, phone: dict):
+        for p in self.phones:
+            if p["id"] == phone["id"] or (p["host"] == phone["host"] and p["port"] == phone["port"]):
+                use = p.get("use", True)
+                p.update(phone)
+                p["use"] = use
+                return
+        self.phones.append({**phone, "use": True})
+
+    def find_nearby(self):
+        self.find_btn.state(["disabled"])
+        self.devices_hint.set("Looking for phones with Images for a laptop on…")
+        known = [p["host"] for p in self.phones]
+
+        def work():
+            try:
+                found, error = find_phones(known, log=self.logs.put), None
+            except Exception as e:  # noqa: BLE001
+                found, error = [], f"Find nearby failed: {e}"
+            self.root.after(0, lambda: self.on_found(found, error))
+
+        threading.Thread(target=work, daemon=True).start()
+
+    def on_found(self, found: List[dict], error: Optional[str]):
+        self.find_btn.state(["!disabled"])
+        for phone in found:
+            self.merge_phone(phone)
+        self.refresh_devices()
+        self.save_state()
+        online = [p for p in found if p["online"]]
+        if error:
+            self.devices_hint.set(error)
+        elif online:
+            self.devices_hint.set(f"Found {len(online)}: " + ", ".join(p["name"] for p in online)
+                                  + ". Click Use to include or leave out a device.")
+        else:
+            self.devices_hint.set("No phones found. On each phone: Phone cluster → Images for a "
+                                  "laptop, keep PrivateLM open, same Wi-Fi. Or add one by IP.")
+
+    def add_by_ip(self):
+        text = self.ip_var.get().strip()
+        if not text:
+            return
+        host, _, port = text.partition(":")
+        try:
+            port_n = int(port) if port else PHONE_PORT
+            socket.inet_aton(host)
+        except (ValueError, OSError):
+            messagebox.showerror("PrivateLM", "Use the form 192.168.1.20 or 192.168.1.20:50061")
+            return
+        self.ip_var.set("")
+        self.devices_hint.set(f"Asking {host}…")
+
+        def work():
+            status = phone_status(host, port_n)
+            phone = {"id": f"{host}:{port_n}", "host": host, "port": port_n,
+                     "name": (status or {}).get("name") or host, "model": (status or {}).get("model", ""),
+                     "online": status is not None, "loaded": bool((status or {}).get("loaded"))}
+            self.root.after(0, lambda: self.on_added(phone))
+
+        threading.Thread(target=work, daemon=True).start()
+
+    def on_added(self, phone: dict):
+        self.merge_phone(phone)
+        self.refresh_devices()
+        self.save_state()
+        if phone["online"]:
+            self.devices_hint.set(f"Added {phone['name']}.")
+        else:
+            self.devices_hint.set(f"Added {phone['host']}, but it didn't answer. Turn on Images for a "
+                                  "laptop on it and keep PrivateLM open.")
+
+    # This computer's model --------------------------------------------------
 
     def browse(self):
         path = filedialog.askopenfilename(
@@ -188,6 +491,7 @@ class ImagesTab:
         if path:
             self.model_var.set(path)
             self.describe_model()
+            self.refresh_devices()
             self.save_state()
 
     def describe_model(self):
@@ -259,12 +563,6 @@ class ImagesTab:
             line = line.rstrip()
             self.tail = (self.tail + [line])[-8:]
             self.logs.put(line)
-            if "sampling" in line.lower() or "step" in line.lower():
-                self.root.after(0, lambda l=line: self.progress(l))
-
-    def progress(self, line: str):
-        if self.generating:
-            self.gen_status.set(line.split("] ")[-1][:120])
 
     def poll(self):
         proc = self.server
@@ -282,8 +580,8 @@ class ImagesTab:
                         self.ready = True
                         self.set_dot("#2e7d32")
                         where = "GPU" if self.variant == "vulkan" else "CPU"
-                        self.status_var.set(f"Ready on the {where}")
-                        self.gen_btn.state(["!disabled"])
+                        self.status_var.set(f"Model loaded here, on the {where}")
+                        self.refresh_devices()
             except (urllib.error.URLError, OSError):
                 pass
         self.root.after(self.POLL_MS, self.poll)
@@ -293,7 +591,7 @@ class ImagesTab:
         for w in (self.browse_btn, self.device_box):
             w.state(["!disabled"])
         self.set_dot("#c62828")
-        self.status_var.set("Couldn't load the model")
+        self.status_var.set("Couldn't load the model here")
         self.logs.put(message)
         messagebox.showerror("PrivateLM", message)
 
@@ -306,14 +604,11 @@ class ImagesTab:
             except subprocess.TimeoutExpired:
                 proc.kill()
         self.ready = False
-        if self.generating:
-            self.generating = False
-            self.keep_awake(False)
         self.load_btn.configure(text="Load model")
         self.load_btn.state(["!disabled"])
-        self.gen_btn.state(["disabled"])
         for w in (self.browse_btn, self.device_box):
             w.state(["!disabled"])
+        self.refresh_devices()
         if error:
             self.set_dot("#c62828")
             self.status_var.set("The image model stopped")
@@ -321,119 +616,252 @@ class ImagesTab:
             messagebox.showerror("PrivateLM", error)
         else:
             self.set_dot("#9e9e9e")
-            self.status_var.set("No image model loaded")
+            self.status_var.set("No image model loaded here")
 
     def shutdown(self):
+        self.stop_run()
         if self.server:
             self.unload()
 
     # Generating -------------------------------------------------------------
 
-    def generate(self):
-        prompt = self.prompt.get("1.0", "end").strip()
-        if not prompt:
+    def build_jobs(self) -> Optional[List[Job]]:
+        text = self.prompt.get("1.0", "end").strip()
+        try:
+            count = max(1, int(self.count_var.get()))
+            seed = int(self.seed_var.get() or -1)
+        except ValueError:
+            messagebox.showerror("PrivateLM", "Check the seed and the number of images.")
+            return None
+        if self.mode_var.get() == MODE_QUEUE:
+            prompts = [line.strip() for line in text.splitlines() if line.strip()]
+        else:
+            prompts = [" ".join(text.split())] if text else []
+        if not prompts:
             messagebox.showinfo("PrivateLM", "Write a prompt first.")
+            return None
+        jobs = []
+        for prompt in prompts:
+            for i in range(count):
+                s = seed + i if seed >= 0 else random.randint(0, 2**31 - 1)
+                jobs.append(Job(len(jobs), prompt, s))
+        return jobs
+
+    def generate(self):
+        jobs = self.build_jobs()
+        if not jobs:
             return
         try:
             w, h = (int(x) for x in self.size_var.get().split("×"))
             steps = int(self.steps_var.get())
             cfg = float(self.cfg_var.get())
-            seed = int(self.seed_var.get() or -1)
         except ValueError:
-            messagebox.showerror("PrivateLM", "Check the steps, CFG and seed.")
+            messagebox.showerror("PrivateLM", "Check the steps and CFG.")
             return
-        if seed < 0:
-            seed = random.randint(0, 2**31 - 1)
+        devices = [d for d in self.devices() if d.use]
+        if self.local_use and not self.ready:
+            devices = [d for d in devices if d.id != LOCAL_ID]
+        if not devices:
+            messagebox.showinfo("PrivateLM", "Load the model here, or add a phone with Images for a "
+                                             "laptop on, and tick Use.")
+            return
         self.save_state()
-        body = {"prompt": prompt, "negative_prompt": self.neg_var.get(), "width": w, "height": h,
-                "steps": steps, "cfg_scale": cfg, "seed": seed, "sampler_name": self.sampler_var.get(),
-                "batch_size": 1}
-        self.generating = True
+        params = {"negative_prompt": self.neg_var.get(), "width": w, "height": h, "steps": steps,
+                  "cfg_scale": cfg, "sampler_name": self.sampler_var.get()}
+        pending: "queue.Queue[Job]" = queue.Queue()
+        for job in jobs:
+            pending.put(job)
+        run = {"pending": pending, "total": len(jobs), "done": 0, "failed": 0, "stop": False,
+               "statuses": {d.id: "Starting…" for d in devices}, "active": len(devices), "inflight": 0,
+               "started": time.time(), "lock": threading.Lock(), "devices": devices}
+        self.run = run
         self.keep_awake(True)
         self.gen_btn.state(["disabled"])
-        self.started = time.time()
-        self.gen_status.set(f"Generating {w}×{h}, {steps} steps, seed {seed}…")
-        self.tick()
-        threading.Thread(target=self.request, args=(body,), daemon=True).start()
+        self.stop_btn.state(["!disabled"])
+        for w_ in (self.find_btn, self.add_btn, self.remove_btn):
+            w_.state(["disabled"])
+        names = ", ".join(d.name for d in devices)
+        self.gen_status.set(f"Making {len(jobs)} image{'s' * (len(jobs) != 1)} on {names}…")
+        for d in devices:
+            threading.Thread(target=self.device_loop, args=(run, d, params), daemon=True).start()
+        self.root.after(500, self.tick)
+
+    def device_loop(self, run: dict, device: Device, params: dict):
+        """One device: takes the next job whenever it's free, until none are left."""
+        def set_status(text):
+            with run["lock"]:
+                run["statuses"][device.id] = text
+
+        failures = 0
+        while not run["stop"]:
+            try:
+                job = run["pending"].get_nowait()
+            except queue.Empty:
+                with run["lock"]:
+                    others_busy = run["inflight"] > 0
+                if not others_busy:
+                    break
+                time.sleep(1)  # a job another device fails comes back here
+                continue
+            with run["lock"]:
+                run["inflight"] += 1
+            set_status(f"Making #{job.index + 1}")
+            started = time.time()
+            body = {**params, "prompt": job.prompt, "seed": job.seed, "batch_size": 1}
+            req = urllib.request.Request(f"{device.url}/sdapi/v1/txt2img", data=json.dumps(body).encode(),
+                                         headers={"Content-Type": "application/json"})
+            try:
+                with urllib.request.urlopen(req, timeout=1800) as r:
+                    data = json.load(r)
+                png = base64.b64decode(data["images"][0])
+                info = data.get("info")
+                if isinstance(info, str):
+                    try:
+                        info = json.loads(info)
+                    except ValueError:
+                        info = {}
+                info = info or {}
+                result = Result(png, job, device.name, time.time() - started,
+                                int(info.get("width") or params["width"]),
+                                int(info.get("height") or params["height"]),
+                                int(info.get("seed", job.seed)))
+                failures = 0
+                with run["lock"]:
+                    run["done"] += 1
+                    run["inflight"] -= 1
+                device.made += 1
+                set_status(f"{device.made} made")
+                self.root.after(0, lambda res=result: self.add_result(res))
+            except Exception as e:  # noqa: BLE001 - per-device failure
+                msg = str(e)
+                if isinstance(e, (socket.timeout, TimeoutError)):
+                    msg = "Timed out"
+                elif isinstance(e, urllib.error.URLError) and not isinstance(e, urllib.error.HTTPError):
+                    msg = "Not reachable"
+                if isinstance(e, urllib.error.HTTPError):
+                    try:
+                        msg = json.loads(e.read().decode("utf-8", "replace")).get("error", msg)
+                    except Exception:  # noqa: BLE001
+                        pass
+                self.logs.put(f"{device.name}: image #{job.index + 1} failed: {msg}")
+                run["pending"].put(job)  # someone else takes it
+                with run["lock"]:
+                    run["inflight"] -= 1
+                failures += 1
+                if failures >= 2 or isinstance(e, (urllib.error.URLError, OSError)) and \
+                        not isinstance(e, urllib.error.HTTPError):
+                    set_status(f"Stopped: {msg[:60]}")
+                    break
+                time.sleep(2)
+        with run["lock"]:
+            run["active"] -= 1
+            if run["statuses"].get(device.id, "").startswith("Making"):
+                run["statuses"][device.id] = f"{device.made} made"
 
     def tick(self):
-        if self.generating:
-            self.status_var.set(f"Generating… {int(time.time() - self.started)} s")
-            self.root.after(1000, self.tick)
+        run = self.run
+        if not run:
+            return
+        with run["lock"]:
+            statuses = dict(run["statuses"])
+            done, total, active = run["done"], run["total"], run["active"]
+        self.refresh_devices(statuses)
+        elapsed = int(time.time() - run["started"])
+        self.status_var.set(f"{done} of {total} made · {elapsed} s")
+        if active == 0:
+            self.finish_run()
+            return
+        self.root.after(1000, self.tick)
 
-    def request(self, body: dict):
-        req = urllib.request.Request(f"http://127.0.0.1:{PORT}/sdapi/v1/txt2img",
-                                     data=json.dumps(body).encode(),
-                                     headers={"Content-Type": "application/json"})
-        try:
-            with urllib.request.urlopen(req, timeout=3600) as r:
-                data = json.load(r)
-            png = base64.b64decode(data["images"][0])
-            self.root.after(0, lambda: self.on_image(png, body))
-        except Exception as e:  # noqa: BLE001
-            msg = str(e)
-            if isinstance(e, urllib.error.HTTPError):
-                try:
-                    msg = e.read().decode("utf-8", "replace")[:500]
-                except Exception:  # noqa: BLE001
-                    pass
-            self.root.after(0, lambda: self.on_gen_failed(msg))
-
-    def on_image(self, png: bytes, body: dict):
-        self.generating = False
+    def finish_run(self):
+        run, self.run = self.run, None
+        if not run:
+            return
         self.keep_awake(False)
-        seconds = int(time.time() - self.started)
-        self.last_png = png
-        name = f"{time.strftime('%Y%m%d-%H%M%S')}-{body['seed']}.png"
-        path = pictures_dir() / name
+        self.gen_btn.state(["!disabled"])
+        self.stop_btn.state(["disabled"])
+        for w_ in (self.find_btn, self.add_btn, self.remove_btn):
+            w_.state(["!disabled"])
+        left = run["pending"].qsize()
+        elapsed = int(time.time() - run["started"])
+        per = ", ".join(f"{d.name} {d.made}" for d in run["devices"] if d.made)
+        if run["stop"]:
+            self.gen_status.set(f"Stopped: {run['done']} made in {elapsed} s ({per or 'none'}).")
+        elif left:
+            self.gen_status.set(f"{run['done']} made, {left} not made: every device stopped. See the log.")
+        else:
+            self.gen_status.set(f"Done: {run['done']} images in {elapsed} s ({per}). Saved to {pictures_dir()}")
+        self.status_var.set("Model loaded here" if self.ready else "No image model loaded here")
+        with run["lock"]:
+            statuses = dict(run["statuses"])
+        self.refresh_devices(statuses)
+
+    def stop_run(self):
+        run = self.run
+        if run:
+            run["stop"] = True
+            self.gen_status.set("Stopping: images already started will finish…")
+            self.stop_btn.state(["disabled"])
+
+    # Results ----------------------------------------------------------------
+
+    def add_result(self, res: Result):
+        name = f"{time.strftime('%Y%m%d-%H%M%S')}-{res.seed}-{len(self.results) + 1}.png"
         try:
-            path.write_bytes(png)
-            saved = f"Saved to {path}"
+            res.path = pictures_dir() / name
+            res.path.write_bytes(res.png)
         except OSError as e:
-            saved = f"Couldn't save: {e}"
-        self.show(png)
-        self.save_btn.state(["!disabled"])
-        if self.ready:
-            self.gen_btn.state(["!disabled"])
-            self.status_var.set(f"Ready · last image took {seconds} s")
-        self.gen_status.set(f"Seed {body['seed']} · {saved}")
+            self.logs.put(f"Couldn't save an image: {e}")
+            res.path = None
+        try:
+            photo = tk.PhotoImage(data=base64.b64encode(res.png).decode())
+        except tk.TclError as e:
+            self.logs.put(f"Couldn't show an image: {e}")
+            return
+        res.photo = fit_photo(photo, PREVIEW)
+        res.thumb = fit_photo(photo, THUMB)
+        self.results.append(res)
+        self.draw_gallery()
+        self.select(res)
 
-    def on_gen_failed(self, message: str):
-        self.generating = False
-        self.keep_awake(False)
-        if self.ready:
-            self.gen_btn.state(["!disabled"])
-            self.status_var.set("Ready")
-        self.gen_status.set("Generation failed: see the log")
-        self.logs.put(f"Generation failed: {message}")
-        if self.server:
-            messagebox.showerror("PrivateLM", f"The image couldn't be made:\n\n{message}")
+    def draw_gallery(self):
+        self.gallery.delete("all")
+        cell = THUMB + 6
+        for i, res in enumerate(self.results):
+            x = (i % THUMB_COLS) * cell + cell // 2
+            y = (i // THUMB_COLS) * cell + cell // 2
+            if res is self.selected:
+                self.gallery.create_rectangle(x - cell // 2 + 1, y - cell // 2 + 1, x + cell // 2 - 1,
+                                              y + cell // 2 - 1, outline="#1565c0", width=2)
+            self.gallery.create_image(x, y, image=res.thumb, tags=(f"r{i}",))
+        rows = -(-len(self.results) // THUMB_COLS)
+        self.gallery.configure(scrollregion=(0, 0, THUMB_COLS * cell, max(rows, 1) * cell))
+        if self.results and self.results[-1] is self.selected:
+            self.gallery.yview_moveto(1.0)
 
-    def show(self, png: bytes):
-        photo = tk.PhotoImage(data=base64.b64encode(png).decode())
-        # Tk scales only by whole-number ratios: pick the largest that fits.
-        longest = max(photo.width(), photo.height())
-        if longest > PREVIEW:
-            best = (1, -(-longest // PREVIEW))
-            for zoom in (2, 3):
-                shrink = -(-longest * zoom // PREVIEW)
-                if zoom / shrink > best[0] / best[1]:
-                    best = (zoom, shrink)
-            zoom, shrink = best
-            if zoom > 1:
-                photo = photo.zoom(zoom, zoom)
-            photo = photo.subsample(shrink, shrink)
-        self.photo = photo  # keep a reference
+    def on_gallery_click(self, event):
+        cell = THUMB + 6
+        x, y = self.gallery.canvasx(event.x), self.gallery.canvasy(event.y)
+        i = int(y // cell) * THUMB_COLS + int(x // cell)
+        if 0 <= x < THUMB_COLS * cell and 0 <= i < len(self.results):
+            self.select(self.results[i])
+
+    def select(self, res: Result):
+        self.selected = res
         self.canvas.delete("all")
-        self.canvas.create_image(PREVIEW // 2, PREVIEW // 2, image=photo)
+        self.canvas.create_image(PREVIEW // 2, PREVIEW // 2, image=res.photo)
+        prompt = res.job.prompt if len(res.job.prompt) <= 70 else res.job.prompt[:67] + "…"
+        self.caption.set(f"{res.device} · seed {res.seed} · {res.width}×{res.height} · {res.seconds:.0f} s\n{prompt}")
+        self.save_btn.state(["!disabled"])
+        self.draw_gallery()
 
     def save_as(self):
-        if not self.last_png:
+        if not self.selected:
             return
         path = filedialog.asksaveasfilename(defaultextension=".png", filetypes=[("PNG image", "*.png")],
                                             initialdir=str(pictures_dir()))
         if path:
-            Path(path).write_bytes(self.last_png)
+            Path(path).write_bytes(self.selected.png)
 
     def open_folder(self):
         folder = str(pictures_dir())
