@@ -26,7 +26,7 @@ SIZES = ["512 × 512", "512 × 768", "768 × 512", "384 × 384", "768 × 768"]
 SAMPLERS = ["Euler a", "Euler", "DPM++ 2M", "DDIM", "LCM", "Heun"]
 DEVICE_AUTO = "Automatic (GPU if it has one)"
 DEVICE_CPU = "CPU only"
-PREVIEW = 384  # px
+PREVIEW = 400  # px, the preview's longest side
 
 
 def pictures_dir() -> Path:
@@ -133,25 +133,30 @@ class ImagesTab:
         self.neg_var = tk.StringVar(value="blurry, low quality, deformed")
         ttk.Entry(gen, textvariable=self.neg_var).grid(row=1, column=1, columnspan=3, sticky="ew", pady=2)
 
-        opts = ttk.Frame(gen)
-        opts.grid(row=2, column=0, columnspan=4, sticky="w", pady=(6, 2))
         self.size_var = tk.StringVar(value=SIZES[0])
         self.steps_var = tk.StringVar(value="20")
         self.cfg_var = tk.StringVar(value="7")
         self.sampler_var = tk.StringVar(value=SAMPLERS[0])
         self.seed_var = tk.StringVar(value="-1")
-        for label, widget in (
-                ("Size", ttk.Combobox(opts, textvariable=self.size_var, values=SIZES, width=10, state="readonly")),
-                ("Steps", ttk.Spinbox(opts, textvariable=self.steps_var, from_=1, to=80, width=4)),
-                ("CFG", ttk.Spinbox(opts, textvariable=self.cfg_var, from_=1, to=20, increment=0.5, width=4)),
-                ("Sampler", ttk.Combobox(opts, textvariable=self.sampler_var, values=SAMPLERS, width=9,
-                                         state="readonly")),
-                ("Seed", ttk.Entry(opts, textvariable=self.seed_var, width=11))):
-            ttk.Label(opts, text=label).pack(side="left", padx=(0, 4))
-            widget.pack(side="left", padx=(0, 10))
+        rows = (
+            (("Size", ttk.Combobox(gen, textvariable=self.size_var, values=SIZES, width=10, state="readonly")),
+             ("Steps", ttk.Spinbox(gen, textvariable=self.steps_var, from_=1, to=80, width=5))),
+            (("Sampler", ttk.Combobox(gen, textvariable=self.sampler_var, values=SAMPLERS, width=10,
+                                      state="readonly")),
+             ("CFG", ttk.Spinbox(gen, textvariable=self.cfg_var, from_=1, to=20, increment=0.5, width=5))),
+        )
+        for r, row in enumerate(rows, 2):
+            for c, (label, widget) in enumerate(row):
+                ttk.Label(gen, text=label).grid(row=r, column=c * 2, sticky="w", pady=2, padx=(0, 6))
+                widget.grid(row=r, column=c * 2 + 1, sticky="w", pady=2, padx=(0, 12))
+        ttk.Label(gen, text="Seed").grid(row=4, column=0, sticky="w", pady=2)
+        seed_row = ttk.Frame(gen)
+        seed_row.grid(row=4, column=1, columnspan=3, sticky="w", pady=2)
+        ttk.Entry(seed_row, textvariable=self.seed_var, width=12).pack(side="left")
+        ttk.Label(seed_row, text="−1 = random", style="Muted.TLabel").pack(side="left", padx=(8, 0))
 
         buttons = ttk.Frame(gen)
-        buttons.grid(row=3, column=0, columnspan=4, sticky="ew", pady=(8, 4))
+        buttons.grid(row=5, column=0, columnspan=4, sticky="ew", pady=(8, 4))
         self.gen_btn = ttk.Button(buttons, text="Generate", command=self.generate)
         self.gen_btn.pack(side="left")
         self.gen_btn.state(["disabled"])
@@ -161,11 +166,14 @@ class ImagesTab:
         ttk.Button(buttons, text="Open folder", command=self.open_folder).pack(side="left", padx=(8, 0))
         self.gen_status = tk.StringVar(value="")
         ttk.Label(gen, textvariable=self.gen_status, style="Muted.TLabel", wraplength=460, justify="left")\
-            .grid(row=4, column=0, columnspan=4, sticky="w")
+            .grid(row=6, column=0, columnspan=4, sticky="w")
 
-        self.canvas = tk.Canvas(gen, width=PREVIEW, height=PREVIEW, bg="#eeeeee", highlightthickness=0)
-        self.canvas.grid(row=5, column=0, columnspan=4, pady=(8, 0))
+        preview = ttk.LabelFrame(outer, text="Preview", padding=8)
+        preview.grid(row=1, column=3, rowspan=6, sticky="n", padx=(14, 0))
+        self.canvas = tk.Canvas(preview, width=PREVIEW, height=PREVIEW, bg="#eeeeee", highlightthickness=0)
+        self.canvas.pack()
         self.canvas.create_text(PREVIEW // 2, PREVIEW // 2, text="Your image appears here", fill="#888888")
+        gen.grid_configure(row=6)
 
     def set_dot(self, color: str):
         self.dot.delete("all")
@@ -403,14 +411,21 @@ class ImagesTab:
 
     def show(self, png: bytes):
         photo = tk.PhotoImage(data=base64.b64encode(png).decode())
-        factor = max(1, -(-max(photo.width(), photo.height()) // PREVIEW))  # ceil
-        if factor > 1:
-            photo = photo.subsample(factor, factor)
+        # Tk scales only by whole-number ratios: pick the largest that fits.
+        longest = max(photo.width(), photo.height())
+        if longest > PREVIEW:
+            best = (1, -(-longest // PREVIEW))
+            for zoom in (2, 3):
+                shrink = -(-longest * zoom // PREVIEW)
+                if zoom / shrink > best[0] / best[1]:
+                    best = (zoom, shrink)
+            zoom, shrink = best
+            if zoom > 1:
+                photo = photo.zoom(zoom, zoom)
+            photo = photo.subsample(shrink, shrink)
         self.photo = photo  # keep a reference
         self.canvas.delete("all")
-        self.canvas.configure(width=max(PREVIEW, photo.width()), height=max(PREVIEW, photo.height()))
-        self.canvas.create_image(int(self.canvas["width"]) // 2, int(self.canvas["height"]) // 2,
-                                 image=photo)
+        self.canvas.create_image(PREVIEW // 2, PREVIEW // 2, image=photo)
 
     def save_as(self):
         if not self.last_png:
