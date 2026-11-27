@@ -184,42 +184,40 @@ def plan_split(model_mb: float, n_layers: int, laptop_free_mb: float, laptop_spe
 
 # ── Network ─────────────────────────────────────────────────────────────────
 
-def discover_workers(seconds: float = 4.0) -> List[dict]:
-    """Phones (and laptops) advertising a PrivateLM worker on this Wi-Fi."""
-    from zeroconf import ServiceBrowser, Zeroconf  # type: ignore
+def _worker_from(found: dict) -> dict:
+    props = found["props"]
+    return {
+        "name": props.get("model") or found["instance"].split(".")[0].replace("PrivateLM ", ""),
+        "host": found["host"], "port": found["port"],
+        "ram": int(props["ram"]) if props.get("ram", "").isdigit() else None,
+        "bw": float(props["bw"]) if props.get("bw") else None,
+        "id": props.get("id"), "v": props.get("v"),
+    }
+
+
+def discover_workers(known_hosts=(), seconds: float = 4.0, log=None) -> List[dict]:
+    """Phones (and laptops) set to Worker on this Wi-Fi: a multicast search,
+    plus a direct question to each known address, which works on networks
+    that drop multicast between some devices."""
+    import discovery
 
     found = {}
-    zc = Zeroconf()
-
-    class Listener:
-        def add_service(self, z, type_, name):
-            info = z.get_service_info(type_, name, timeout=3000)
-            if not info or not info.parsed_addresses():
-                return
-            props = {k.decode(): (v.decode() if v else "") for k, v in info.properties.items()}
-            host = next((a for a in info.parsed_addresses() if ":" not in a), None)
-            if not host:
-                return
-            found[name] = {
-                "name": props.get("model") or name.split(".")[0].replace("PrivateLM ", ""),
-                "host": host, "port": info.port,
-                "ram": int(props["ram"]) if props.get("ram", "").isdigit() else None,
-                "bw": float(props["bw"]) if props.get("bw") else None,
-                "id": props.get("id"), "v": props.get("v"),
-            }
-
-        update_service = add_service
-
-        def remove_service(self, *_):
-            pass
-
-    try:
-        ServiceBrowser(zc, core.SERVICE_TYPE, Listener())
-        time.sleep(seconds)
-    finally:
-        zc.close()
+    for f in discovery.browse(core.SERVICE_TYPE, seconds, log=log):
+        found[(f["host"], f["port"])] = f
+    for host in sorted(set(known_hosts)):
+        for f in discovery.query_host(host, core.SERVICE_TYPE, log=log):
+            found.setdefault((f["host"], f["port"]), f)
     own = core.worker_id()
-    return [w for w in found.values() if w.get("id") != own]
+    workers = [_worker_from(f) for f in found.values()]
+    return [w for w in workers if w.get("id") != own]
+
+
+def stats_for(host: str, port: int, log=None) -> Optional[dict]:
+    """A worker's name, free memory and speed, asked directly at its IP."""
+    import discovery
+
+    found = [_worker_from(f) for f in discovery.query_host(host, core.SERVICE_TYPE, log=log)]
+    return next((w for w in found if w["port"] == port), found[0] if found else None)
 
 
 def reachable(host: str, port: int, timeout: float = 2.0) -> bool:
@@ -473,9 +471,11 @@ class MasterTab:
         self.find_btn.state(["disabled"])
         self.workers_hint.set("Looking for phones set to Worker…")
 
+        known = [w["host"] for w in self.workers]
+
         def work():
             try:
-                found = discover_workers()
+                found = discover_workers(known, log=self.logs.put)
                 error = None
             except ImportError:
                 found, error = [], "Find nearby needs the zeroconf package. Add phones by IP instead."
@@ -516,6 +516,32 @@ class MasterTab:
             return
         self.merge_worker({"name": host, "host": host, "port": port_n, "ram": None, "bw": None, "id": None})
         self.ip_var.set("")
+        self.refresh_workers()
+        self.save_state()
+        self.workers_hint.set(f"Asking {host} for its details…")
+
+        def work():
+            try:
+                stats = stats_for(host, port_n, log=self.logs.put)
+            except Exception as e:  # noqa: BLE001
+                self.logs.put(f"Couldn't ask {host}: {e}")
+                stats = None
+            self.root.after(0, lambda: self.on_stats(host, port_n, stats))
+
+        threading.Thread(target=work, daemon=True).start()
+
+    def on_stats(self, host: str, port: int, stats: Optional[dict]):
+        if stats:
+            for w in self.workers:
+                if w["host"] == host and w["port"] == port:
+                    use = w.get("use", True)
+                    w.update({k: v for k, v in stats.items() if v is not None})
+                    w["port"], w["use"] = port, use
+            self.workers_hint.set(f"Added {stats['name']}.")
+        else:
+            self.workers_hint.set(f"Added {host}, but it didn't say how much memory it has, so 2 GB is "
+                                  "assumed. Check that Worker is on and PrivateLM is open on it, then "
+                                  "tap Find nearby to try again.")
         self.refresh_workers()
         self.save_state()
 
