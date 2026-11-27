@@ -28,6 +28,7 @@ from tkinter import filedialog, messagebox, ttk
 from typing import Callable, Dict, List, Optional
 
 import privatelm_worker as core
+import prompt_helper as ph
 
 PORT = 7861                        # this computer's sd-server (localhost only)
 PHONE_PORT = 50061                 # ImageWorkerService in the phone app
@@ -112,6 +113,7 @@ class Job:
     index: int
     prompt: str
     seed: int
+    negative: str = ""
 
 
 @dataclass
@@ -146,7 +148,8 @@ class ImagesTab:
 
     def __init__(self, root: tk.Tk, container, logs: queue.Queue,
                  find_sd_server: Callable[[str, Callable[[str], None]], Path],
-                 has_gpu: Callable[[], bool], keep_awake: Callable[[bool], None], no_window: int):
+                 has_gpu: Callable[[], bool], keep_awake: Callable[[bool], None], no_window: int,
+                 find_server=None, master_endpoint: Callable[[], Optional[tuple]] = lambda: None):
         self.root = root
         self.container = container
         self.logs = logs
@@ -164,6 +167,8 @@ class ImagesTab:
         self.selected: Optional[Result] = None
         self.run: Optional[dict] = None       # the running batch
         self.state_path = core.config_dir() / "images.json"
+        self.ai = ph.PromptAI(logs, find_server, master_endpoint, no_window)
+        self.helper: Optional[ph.HelperWindow] = None
         self.build_ui()
         self.load_state()
         self.refresh_devices()
@@ -180,7 +185,8 @@ class ImagesTab:
             self.describe_model()
         for key, var in (("size", self.size_var), ("steps", self.steps_var), ("cfg", self.cfg_var),
                          ("sampler", self.sampler_var), ("negative", self.neg_var), ("device", self.device_var),
-                         ("mode", self.mode_var), ("count", self.count_var), ("seed", self.seed_var)):
+                         ("mode", self.mode_var), ("count", self.count_var), ("seed", self.seed_var),
+                         ("preset", self.preset_var)):
             if key in state:
                 var.set(state[key])
         self.phones = state.get("phones", [])
@@ -193,7 +199,8 @@ class ImagesTab:
         state = {"model": self.model_var.get(), "size": self.size_var.get(), "steps": self.steps_var.get(),
                  "cfg": self.cfg_var.get(), "sampler": self.sampler_var.get(), "negative": self.neg_var.get(),
                  "device": self.device_var.get(), "mode": self.mode_var.get(), "count": self.count_var.get(),
-                 "seed": self.seed_var.get(), "prompt": self.prompt.get("1.0", "end").strip(),
+                 "seed": self.seed_var.get(), "preset": self.preset_var.get(),
+                 "prompt": self.prompt.get("1.0", "end").strip(),
                  "phones": self.phones, "local_use": self.local_use}
         try:
             self.state_path.write_text(json.dumps(state, indent=1))
@@ -270,21 +277,30 @@ class ImagesTab:
         gen = ttk.LabelFrame(left, text="What to make", padding=8)
         gen.grid(row=5, column=0, columnspan=3, sticky="ew")
         gen.columnconfigure(1, weight=1)
+        tools = ttk.Frame(gen)
+        tools.grid(row=0, column=0, columnspan=4, sticky="ew", pady=(0, 6))
+        ttk.Button(tools, text="✨ Prompt helper…", command=self.open_helper).pack(side="left")
+        self.preset_var = tk.StringVar(value="")
+        self.preset_box = ttk.Combobox(tools, textvariable=self.preset_var, values=list(ph.PRESETS),
+                                       state="readonly", width=34)
+        self.preset_box.pack(side="right")
+        self.preset_box.bind("<<ComboboxSelected>>", lambda _: self.apply_preset())
+        ttk.Label(tools, text="Settings").pack(side="right", padx=(0, 6))
         modes = ttk.Frame(gen)
-        modes.grid(row=0, column=0, columnspan=4, sticky="w", pady=(0, 4))
+        modes.grid(row=1, column=0, columnspan=4, sticky="w", pady=(0, 4))
         self.mode_var = tk.StringVar(value=MODE_VARIATIONS)
         ttk.Radiobutton(modes, text="Variations of one prompt", value=MODE_VARIATIONS,
                         variable=self.mode_var, command=self.on_mode).pack(side="left", padx=(0, 14))
         ttk.Radiobutton(modes, text="Queue: one prompt per line", value=MODE_QUEUE,
                         variable=self.mode_var, command=self.on_mode).pack(side="left")
         self.prompt_label = tk.StringVar(value="Prompt")
-        ttk.Label(gen, textvariable=self.prompt_label).grid(row=1, column=0, sticky="nw", pady=2)
-        self.prompt = tk.Text(gen, height=4, width=40, wrap="word",
+        ttk.Label(gen, textvariable=self.prompt_label).grid(row=2, column=0, sticky="nw", pady=2)
+        self.prompt = tk.Text(gen, height=3, width=40, wrap="word",
                               font=("Segoe UI", 10) if os.name == "nt" else ("", 10))
-        self.prompt.grid(row=1, column=1, columnspan=3, sticky="ew", pady=2)
-        ttk.Label(gen, text="Avoid").grid(row=2, column=0, sticky="w", pady=2)
+        self.prompt.grid(row=2, column=1, columnspan=3, sticky="ew", pady=2)
+        ttk.Label(gen, text="Avoid").grid(row=3, column=0, sticky="w", pady=2)
         self.neg_var = tk.StringVar(value="blurry, low quality, deformed")
-        ttk.Entry(gen, textvariable=self.neg_var).grid(row=2, column=1, columnspan=3, sticky="ew", pady=2)
+        ttk.Entry(gen, textvariable=self.neg_var).grid(row=3, column=1, columnspan=3, sticky="ew", pady=2)
 
         self.size_var = tk.StringVar(value=SIZES[0])
         self.steps_var = tk.StringVar(value="20")
@@ -302,7 +318,7 @@ class ImagesTab:
             (("Seed", ttk.Entry(gen, textvariable=self.seed_var, width=12)),
              (self.count_label, ttk.Spinbox(gen, textvariable=self.count_var, from_=1, to=100, width=5))),
         )
-        for r, pair in enumerate(grid, 3):
+        for r, pair in enumerate(grid, 4):
             for c, (label, widget) in enumerate(pair):
                 if isinstance(label, tk.StringVar):
                     ttk.Label(gen, textvariable=label).grid(row=r, column=c * 2, sticky="w", pady=2, padx=(0, 6))
@@ -311,10 +327,10 @@ class ImagesTab:
                 widget.grid(row=r, column=c * 2 + 1, sticky="w", pady=2, padx=(0, 12))
         self.seed_hint = tk.StringVar(value="−1: a random seed for each image")
         ttk.Label(gen, textvariable=self.seed_hint, style="Muted.TLabel")\
-            .grid(row=6, column=0, columnspan=4, sticky="w")
+            .grid(row=7, column=0, columnspan=4, sticky="w")
 
         buttons = ttk.Frame(gen)
-        buttons.grid(row=7, column=0, columnspan=4, sticky="ew", pady=(8, 2))
+        buttons.grid(row=8, column=0, columnspan=4, sticky="ew", pady=(8, 2))
         self.gen_btn = ttk.Button(buttons, text="Generate", command=self.generate)
         self.gen_btn.pack(side="left")
         self.stop_btn = ttk.Button(buttons, text="Stop", command=self.stop_run)
@@ -323,7 +339,7 @@ class ImagesTab:
         ttk.Button(buttons, text="Open folder", command=self.open_folder).pack(side="left", padx=(8, 0))
         self.gen_status = tk.StringVar(value="")
         ttk.Label(gen, textvariable=self.gen_status, style="Muted.TLabel", wraplength=440, justify="left")\
-            .grid(row=8, column=0, columnspan=4, sticky="w")
+            .grid(row=9, column=0, columnspan=4, sticky="w")
 
         # Preview + gallery
         preview = ttk.LabelFrame(right, text="Preview", padding=8)
@@ -361,6 +377,44 @@ class ImagesTab:
             self.prompt_label.set("Prompt")
             self.count_label.set("Images")
             self.seed_hint.set("−1: a random seed for each image; a number N gives seeds N, N+1, …")
+
+    # Prompt help -------------------------------------------------------------
+
+    def open_helper(self):
+        if self.helper and self.helper.win.winfo_exists():
+            self.helper.win.lift()
+            return
+        self.helper = ph.HelperWindow(self.root, self.ai, self.apply_prompts, self.selected_prompt,
+                                      lambda: Path(self.model_var.get()).name)
+
+    def apply_prompts(self, prompts: List[str], negative: str):
+        """From the prompt helper: one prompt for Variations, several for the Queue."""
+        self.mode_var.set(MODE_QUEUE if len(prompts) > 1 else MODE_VARIATIONS)
+        if len(prompts) > 1:
+            self.count_var.set("1")
+        self.on_mode()
+        self.prompt.delete("1.0", "end")
+        self.prompt.insert("1.0", "\n".join(prompts))
+        if negative:
+            self.neg_var.set(negative)
+        self.save_state()
+
+    def selected_prompt(self) -> Optional[tuple]:
+        if not self.selected:
+            return None
+        return self.selected.job.prompt, self.selected.job.negative
+
+    def apply_preset(self, name: Optional[str] = None):
+        name = name or self.preset_var.get()
+        if name not in ph.PRESETS:
+            return
+        sampler, steps, cfg, size, _ = ph.PRESETS[name]
+        self.preset_var.set(name)
+        self.sampler_var.set(sampler)
+        self.steps_var.set(str(steps))
+        self.cfg_var.set(f"{cfg:g}")
+        self.size_var.set(size)
+        self.save_state()
 
     # Devices ----------------------------------------------------------------
 
@@ -491,6 +545,7 @@ class ImagesTab:
         if path:
             self.model_var.set(path)
             self.describe_model()
+            self.apply_preset(ph.preset_for(Path(path).name))
             self.refresh_devices()
             self.save_state()
 
@@ -620,6 +675,7 @@ class ImagesTab:
 
     def shutdown(self):
         self.stop_run()
+        self.ai.shutdown()
         if self.server:
             self.unload()
 
@@ -644,7 +700,7 @@ class ImagesTab:
         for prompt in prompts:
             for i in range(count):
                 s = seed + i if seed >= 0 else random.randint(0, 2**31 - 1)
-                jobs.append(Job(len(jobs), prompt, s))
+                jobs.append(Job(len(jobs), prompt, s, self.neg_var.get()))
         return jobs
 
     def generate(self):

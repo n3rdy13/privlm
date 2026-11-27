@@ -712,3 +712,10 @@ class MasterTab:
     @property
     def running(self) -> bool:
         return self.server is not None
+
+    def endpoint(self):
+        """(base URL, API key, model name) of the running model, for the
+        Images tab's prompt helper; None when no model is ready."""
+        if not (self.server and self.ready):
+            return None
+        return (f"http://127.0.0.1:{self.port}", self.conn_vars["key"].get(), self.conn_vars["model"].get())

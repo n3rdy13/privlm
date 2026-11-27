@@ -484,7 +484,9 @@ class App:
                                 measure_cpu=lambda: measure(DEVICE_CPU)[2],
                                 find_server=find_server, keep_awake=keep_awake, no_window=NO_WINDOW)
         self.images = ImagesTab(root, images_frame, self.logs, find_sd_server=find_sd_server,
-                                has_gpu=has_gpu, keep_awake=keep_awake, no_window=NO_WINDOW)
+                                has_gpu=has_gpu, keep_awake=keep_awake, no_window=NO_WINDOW,
+                                find_server=find_server,
+                                master_endpoint=lambda: self.master.endpoint())
         self.worker.is_busy = lambda: self.master.running
         self.master.is_busy = lambda: self.worker.server is not None
 

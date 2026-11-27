@@ -54,6 +54,30 @@ with 20–30 steps. **Automatic** uses the GPU (Vulkan) if the laptop has one,
 else the CPU; integrated graphics can be faster or slower than the CPU, so
 try both.
 
+**Help with prompts.** Click **✨ Prompt helper…**:
+
+- Type your idea in plain words ("an old fisherman mending nets on a pier"),
+  then pick a **Style** (photo, portrait, cinematic, film, painting…),
+  **Lighting**, **Framing** and **Mood**. The helper builds a well-ordered
+  prompt and a matching **Avoid** list as you click.
+- **✨ Improve with AI** rewrites it into a stronger prompt with concrete
+  details. **Give me ideas** writes several different versions (setting,
+  angle, light, mood) and sends them to the Queue, so the laptop and phones
+  make one of each and you keep the best.
+- Didn't like an image? Click it in the gallery, write what's wrong ("too
+  dark", "face looks strange") and click **Fix it**.
+- **Use this prompt** puts the result in the Images tab.
+
+The AI helper uses the chat model running on the Master tab if there is
+one, otherwise a small model of its own: click **Download recommended**
+(Qwen3 4B Instruct, 2.5 GB, about 10–20 seconds per answer on a laptop CPU)
+or **Choose a .gguf…**. The builder works without any model.
+
+**Settings** (next to the helper button) sets sampler, steps, CFG and size
+for the kind of model: choosing a model picks one automatically, e.g.
+*Photo-realistic* for CyberRealistic (DPM++ 2M, 28 steps, CFG 6,
+512 × 768).
+
 **Phones make images too.** On each phone, load the same image model in
 PrivateLM, then open **Phone cluster** and turn on **Images for a laptop**.
 On the laptop, click **Find nearby** under **Devices making images** (or
