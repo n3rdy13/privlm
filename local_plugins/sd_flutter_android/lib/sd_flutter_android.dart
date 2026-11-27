@@ -80,12 +80,18 @@ class SdFlutterAndroid {
     String negativePrompt = '',
     double cfgScale = -1,
     String sampler = '',
+
+    /// Image-to-image: [width] x [height] RGB bytes, changed by [strength].
+    Uint8List? initImage,
+    double strength = 0.75,
     Function(int step, int total)? onProgress,
   }) async {
     _ensureInitialized();
     _onProgress = onProgress;
 
     final out = await _channel.invokeMethod<Map<Object?, Object?>>('generateImageEx', {
+      if (initImage != null) 'initImage': initImage,
+      'strength': strength,
       'prompt': prompt,
       'steps': steps,
       'width': width,

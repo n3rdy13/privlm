@@ -205,6 +205,11 @@ class SdIsolateProcessor {
     SampleMethod sampleMethod = SampleMethod.eulerA,
     Schedule schedule = Schedule.discrete,
     bool vaeTiling = false,
+
+    /// Image-to-image: [width] x [height] RGB bytes to start from, and how
+    /// much of it to change (0..1).
+    Uint8List? initImage,
+    double strength = 0.75,
   }) async {
     if (_disposed) {
       return GenerationResult(error: 'Processor is disposed');
@@ -234,6 +239,8 @@ class SdIsolateProcessor {
       'sampleMethod': sampleMethod.index,
       'schedule': schedule.index,
       'vaeTiling': vaeTiling,
+      'initImage': initImage,
+      'strength': strength,
     });
 
     return _activeCompleter!.future;
@@ -406,6 +413,8 @@ class SdIsolateProcessor {
     final sampleMethod = message['sampleMethod'] as int;
     final schedule = message['schedule'] as int;
     final vaeTiling = message['vaeTiling'] as bool;
+    final initImage = message['initImage'] as Uint8List?;
+    final strength = (message['strength'] as num?)?.toDouble() ?? 0.75;
 
     print(
         '[Isolate] _runGeneration started: prompt="$prompt", ${width}x$height, steps=$steps, seed=$seed');
@@ -414,22 +423,42 @@ class SdIsolateProcessor {
     final negPtr = negativePrompt.toNativeUtf8();
     final outSizePtr = calloc<IntPtr>(1);
 
+    Pointer<Uint8>? initPtr;
     try {
-      print('[Isolate] Calling FFI generate()...');
-      final resultPtr = SdFfiBindings.generate(
-        ctx,
-        promptPtr,
-        negPtr,
-        width,
-        height,
-        steps,
-        seed,
-        cfgScale,
-        sampleMethod,
-        schedule,
-        vaeTiling,
-        outSizePtr,
-      );
+      final Pointer<Uint8> resultPtr;
+      if (initImage != null) {
+        final img2img = SdFfiBindings.img2img;
+        if (img2img == null || initImage.length < width * height * 3) {
+          mainSendPort.send({
+            'type': 'result',
+            'error': img2img == null
+                ? 'This build can\'t do image-to-image'
+                : 'The starting image has the wrong size',
+          });
+          return;
+        }
+        initPtr = calloc<Uint8>(initImage.length);
+        initPtr.asTypedList(initImage.length).setAll(0, initImage);
+        print('[Isolate] Calling FFI img2img() (strength $strength)...');
+        resultPtr = img2img(ctx, promptPtr, negPtr, initPtr, width, height, steps, seed,
+            cfgScale, sampleMethod, schedule, strength, vaeTiling, outSizePtr);
+      } else {
+        print('[Isolate] Calling FFI generate()...');
+        resultPtr = SdFfiBindings.generate(
+          ctx,
+          promptPtr,
+          negPtr,
+          width,
+          height,
+          steps,
+          seed,
+          cfgScale,
+          sampleMethod,
+          schedule,
+          vaeTiling,
+          outSizePtr,
+        );
+      }
       print(
           '[Isolate] FFI generate() returned, resultPtr=${resultPtr.address}');
 
@@ -471,6 +500,7 @@ class SdIsolateProcessor {
         'error': 'Generation exception: $e',
       });
     } finally {
+      if (initPtr != null) calloc.free(initPtr);
       calloc.free(promptPtr);
       calloc.free(negPtr);
       calloc.free(outSizePtr);

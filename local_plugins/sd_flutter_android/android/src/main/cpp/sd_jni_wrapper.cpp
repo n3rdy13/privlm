@@ -521,7 +521,9 @@ SD_FFI_API void sd_ffi_free(void* ctx) {
 // Generate image. Returns malloc'd RGB buffer (caller must free).
 // out_size: receives buffer size in bytes (width * height * 3).
 // Returns NULL on failure.
-SD_FFI_API uint8_t* sd_ffi_generate(void* ctx,
+// Text-to-image, or image-to-image when init_rgb is set (RGB, width x height,
+// strength 0..1 = how much of it to change).
+static uint8_t* sd_ffi_generate_impl(void* ctx,
                          const char* prompt,
                          const char* negative_prompt,
                          int width,
@@ -532,6 +534,8 @@ SD_FFI_API uint8_t* sd_ffi_generate(void* ctx,
                          int sample_method,
                          int schedule,
                          bool vae_tiling,
+                         const uint8_t* init_rgb,
+                         float strength,
                          size_t* out_size) {
     if (!ctx || !out_size) return nullptr;
     *out_size = 0;
@@ -544,6 +548,11 @@ SD_FFI_API uint8_t* sd_ffi_generate(void* ctx,
     params.height = height > 0 ? height : 512;
     params.seed = seed;
     params.batch_count = 1;
+    if (init_rgb) {
+        // stable-diffusion.cpp only reads the image; the cast drops const.
+        params.init_image = {(uint32_t)params.width, (uint32_t)params.height, 3, (uint8_t*)init_rgb};
+        params.strength = strength > 0.0f && strength <= 1.0f ? strength : 0.75f;
+    }
 
     params.sample_params.sample_method = (sample_method_t)sample_method;
     params.sample_params.scheduler = (scheduler_t)schedule;
@@ -607,6 +616,43 @@ SD_FFI_API uint8_t* sd_ffi_generate(void* ctx,
 }
 
 // Get number of physical CPU cores.
+
+SD_FFI_API uint8_t* sd_ffi_generate(void* ctx,
+                         const char* prompt,
+                         const char* negative_prompt,
+                         int width,
+                         int height,
+                         int steps,
+                         int64_t seed,
+                         float cfg_scale,
+                         int sample_method,
+                         int schedule,
+                         bool vae_tiling,
+                         size_t* out_size) {
+    return sd_ffi_generate_impl(ctx, prompt, negative_prompt, width, height, steps, seed, cfg_scale,
+                                sample_method, schedule, vae_tiling, nullptr, 0.0f, out_size);
+}
+
+// Image-to-image: init_rgb is width x height x 3 bytes.
+SD_FFI_API uint8_t* sd_ffi_img2img(void* ctx,
+                         const char* prompt,
+                         const char* negative_prompt,
+                         const uint8_t* init_rgb,
+                         int width,
+                         int height,
+                         int steps,
+                         int64_t seed,
+                         float cfg_scale,
+                         int sample_method,
+                         int schedule,
+                         float strength,
+                         bool vae_tiling,
+                         size_t* out_size) {
+    if (!init_rgb) return nullptr;
+    return sd_ffi_generate_impl(ctx, prompt, negative_prompt, width, height, steps, seed, cfg_scale,
+                                sample_method, schedule, vae_tiling, init_rgb, strength, out_size);
+}
+
 SD_FFI_API int sd_ffi_get_cores(void) {
     return sd_get_num_physical_cores();
 }

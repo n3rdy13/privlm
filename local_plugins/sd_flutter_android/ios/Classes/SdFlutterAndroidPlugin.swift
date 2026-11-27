@@ -75,6 +75,8 @@ public class SdFlutterAndroidPlugin: NSObject, FlutterPlugin {
       let negative = args["negativePrompt"] as? String ?? ""
       let cfg = (args["cfgScale"] as? NSNumber)?.floatValue ?? -1
       let sampler = args["sampler"] as? String ?? ""
+      let initImage = (args["initImage"] as? FlutterStandardTypedData)?.data
+      let strength = (args["strength"] as? NSNumber)?.floatValue ?? 0.75
 
       self.wrapper.onProgress = { step, total in
         DispatchQueue.main.async {
@@ -86,7 +88,8 @@ public class SdFlutterAndroidPlugin: NSObject, FlutterPlugin {
         guard let self = self else { return }
         let out = self.wrapper.generateImage(prompt, steps: Int32(steps), width: Int32(width),
                                              height: Int32(height), seed: seed,
-                                             negativePrompt: negative, cfgScale: cfg, sampler: sampler)
+                                             negativePrompt: negative, cfgScale: cfg, sampler: sampler,
+                                             initImage: initImage, strength: strength)
         DispatchQueue.main.async {
           if let out = out, let data = out["data"] as? Data {
             result([

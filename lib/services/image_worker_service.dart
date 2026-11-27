@@ -1,6 +1,7 @@
 import 'dart:async';
 import 'dart:convert';
 import 'dart:io';
+import 'dart:typed_data';
 
 import 'package:get/get.dart';
 import 'package:llama_flutter_android/llama_flutter_android.dart';
@@ -21,7 +22,7 @@ import 'local_image_service.dart';
 class ImageWorkerService extends GetxService {
   static const int port = 50061;
   static const String protocol = 'img1';
-  static const int maxBodyBytes = 64 * 1024;
+  static const int maxBodyBytes = 16 * 1024 * 1024; // img2img carries a picture
 
   final running = false.obs;
   final busy = false.obs;
@@ -106,6 +107,7 @@ class ImageWorkerService extends GetxService {
         'served': served.value,
         'platform': Platform.isIOS ? 'ios' : 'android',
         'maxPixels': 512 * 768,
+        'img2img': true,
         'v': protocol,
       };
 
@@ -118,6 +120,9 @@ class ImageWorkerService extends GetxService {
       if (request.method == 'POST' && path == '/sdapi/v1/txt2img') {
         return await _txt2img(request);
       }
+      if (request.method == 'POST' && path == '/sdapi/v1/img2img') {
+        return await _txt2img(request, img2img: true);
+      }
       return await _json(request, {'error': 'Not found'}, HttpStatus.notFound);
     } catch (e) {
       try {
@@ -126,7 +131,7 @@ class ImageWorkerService extends GetxService {
     }
   }
 
-  Future<void> _txt2img(HttpRequest request) async {
+  Future<void> _txt2img(HttpRequest request, {bool img2img = false}) async {
     if (!_images.isModelLoaded.value) {
       return await _json(request, {'error': 'No image model is loaded on this phone.'},
           HttpStatus.serviceUnavailable);
@@ -150,6 +155,19 @@ class ImageWorkerService extends GetxService {
     if (prompt.isEmpty) {
       return await _json(request, {'error': 'prompt is required'}, HttpStatus.badRequest);
     }
+    Uint8List? initImage;
+    if (img2img) {
+      final images = body['init_images'];
+      try {
+        var data = (images as List).first as String;
+        final comma = data.indexOf(',');
+        if (data.startsWith('data:') && comma > 0) data = data.substring(comma + 1);
+        initImage = base64Decode(data);
+      } catch (_) {
+        return await _json(request, {'error': 'init_images must hold one base64 image'},
+            HttpStatus.badRequest);
+      }
+    }
 
     busy.value = true;
     client.value = request.connectionInfo?.remoteAddress.address;
@@ -165,6 +183,8 @@ class ImageWorkerService extends GetxService {
         seed: (body['seed'] as num?)?.toInt() ?? -1,
         cfgScale: (body['cfg_scale'] as num?)?.toDouble() ?? 7.0,
         sampler: body['sampler_name'] as String? ?? 'Euler a',
+        initImage: initImage,
+        strength: (body['denoising_strength'] as num?)?.toDouble() ?? 0.75,
         onProgress: (step, total) =>
             status.value = 'Making an image for ${client.value ?? 'a laptop'}: '
                 'step $step of $total',

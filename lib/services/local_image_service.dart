@@ -655,6 +655,11 @@ class LocalImageService extends GetxService {
     int seed = -1,
     double cfgScale = 7.0,
     String sampler = 'euler_a',
+
+    /// Image-to-image: a starting image (PNG/JPEG bytes, resized to the
+    /// output size) and how much of it to change (0..1).
+    Uint8List? initImage,
+    double strength = 0.75,
     void Function(int step, int totalSteps)? onProgress,
   }) async {
     lastFailureReason = null;
@@ -678,8 +683,25 @@ class LocalImageService extends GetxService {
     }
 
     try {
+      Uint8List? initRgb;
+      if (initImage != null) {
+        final decoded = img.decodeImage(initImage);
+        if (decoded == null) {
+          lastFailureReason = 'The starting image couldn\'t be read.';
+          return null;
+        }
+        final sized = (decoded.width == w && decoded.height == h)
+            ? decoded
+            : img.copyResize(decoded,
+                width: w, height: h, interpolation: img.Interpolation.average);
+        initRgb = sized.convert(numChannels: 3).getBytes(order: img.ChannelOrder.rgb);
+      }
       Uint8List? rgb;
       var outW = w, outH = h, outSeed = useSeed;
+      if (initRgb != null && Platform.isIOS && currentBackend.value == Backend.metal) {
+        lastFailureReason = 'Image-to-image needs the Metal image backend, not CoreML.';
+        return null;
+      }
       if (Platform.isIOS && currentBackend.value == Backend.metal) {
         // CoreML takes only the prompt and steps, and returns a PNG.
         const coreMl = MethodChannel('coreml_stable_diffusion');
@@ -701,6 +723,8 @@ class LocalImageService extends GetxService {
           negativePrompt: negativePrompt,
           cfgScale: cfgScale,
           sampler: _samplerNames[method] ?? 'euler_a',
+          initImage: initRgb,
+          strength: strength,
           onProgress: progress,
         );
         if (out != null) {
@@ -721,6 +745,8 @@ class LocalImageService extends GetxService {
           seed: useSeed,
           cfgScale: cfgScale,
           sampleMethod: method,
+          initImage: initRgb,
+          strength: strength,
         );
         await sub?.cancel();
         if (result.error == null) {

@@ -69,7 +69,7 @@ static void ios_sd_log_cb(sd_log_level_t level, const char* text, void* data) {
 
 - (NSData *)generateImage:(NSString *)prompt steps:(int)steps {
     NSDictionary *out = [self generateImage:prompt steps:steps width:512 height:512 seed:-1
-                             negativePrompt:@"" cfgScale:-1 sampler:@""];
+                             negativePrompt:@"" cfgScale:-1 sampler:@"" initImage:nil strength:0];
     return out[@"data"];
 }
 
@@ -80,7 +80,9 @@ static void ios_sd_log_cb(sd_log_level_t level, const char* text, void* data) {
                            seed:(int64_t)seed
                  negativePrompt:(NSString *)negativePrompt
                        cfgScale:(float)cfgScale
-                        sampler:(NSString *)sampler {
+                        sampler:(NSString *)sampler
+                      initImage:(NSData *)initImage
+                       strength:(float)strength {
     if (!g_sd_ctx) return nil;
 
     // Keep the prompt strings alive for the whole call.
@@ -105,6 +107,13 @@ static void ios_sd_log_cb(sd_log_level_t level, const char* text, void* data) {
         if (method != SAMPLE_METHOD_COUNT) params.sample_params.sample_method = method;
     }
     if (cfgScale > 0) params.sample_params.guidance.txt_cfg = cfgScale;
+    if (initImage.length > 0) {
+        if (initImage.length < (NSUInteger)params.width * params.height * 3) return nil;
+        // stable-diffusion.cpp only reads it; NSData keeps it alive for the call.
+        params.init_image = {(uint32_t)params.width, (uint32_t)params.height, 3,
+                             (uint8_t *)initImage.bytes};
+        params.strength = strength > 0 && strength <= 1 ? strength : 0.75f;
+    }
 
     g_progress_block = self.onProgress;
     sd_set_progress_callback(ios_sd_progress_cb, NULL);

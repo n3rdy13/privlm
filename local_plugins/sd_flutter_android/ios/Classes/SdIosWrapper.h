@@ -12,7 +12,8 @@ typedef void (^SdProgressBlock)(int step, int totalSteps);
 /// Full control, for the phone cluster's image worker. width/height <= 0
 /// mean 512, seed < 0 means random, an empty or unknown sampler means
 /// Euler a. Returns @{@"data": RGB bytes, @"width": @w, @"height": @h,
-/// @"seed": @seed} or nil.
+/// @"seed": @seed} or nil. With initImage (width x height x 3 RGB bytes)
+/// it's image-to-image, changing it by strength (0..1).
 - (NSDictionary *)generateImage:(NSString *)prompt
                           steps:(int)steps
                           width:(int)width
@@ -20,7 +21,9 @@ typedef void (^SdProgressBlock)(int step, int totalSteps);
                            seed:(int64_t)seed
                  negativePrompt:(NSString *)negativePrompt
                        cfgScale:(float)cfgScale
-                        sampler:(NSString *)sampler;
+                        sampler:(NSString *)sampler
+                      initImage:(NSData *)initImage
+                       strength:(float)strength;
 - (void)unloadModel;
 
 @end
