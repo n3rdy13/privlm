@@ -53,6 +53,38 @@ def pictures_dir() -> Path:
     return path
 
 
+LORA_EXTENSIONS = (".safetensors", ".gguf", ".pt", ".ckpt")
+_sha_cache: Dict[tuple, str] = {}
+_sha_lock = threading.Lock()
+
+
+def file_sha256(path: Path) -> str:
+    """SHA-256 of a file, remembered while it's unchanged."""
+    import hashlib
+    st = path.stat()
+    key = (str(path), st.st_size, st.st_mtime)
+    with _sha_lock:
+        if key in _sha_cache:
+            return _sha_cache[key]
+    digest = hashlib.sha256()
+    with open(path, "rb") as f:
+        for chunk in iter(lambda: f.read(1 << 20), b""):
+            digest.update(chunk)
+    with _sha_lock:
+        _sha_cache[key] = digest.hexdigest()
+    return _sha_cache[key]
+
+
+def list_loras(folder: str) -> List[str]:
+    """LoRA files under `folder`, as paths relative to it with / separators
+    (how stable-diffusion.cpp's server names them)."""
+    root = Path(folder)
+    if not folder or not root.is_dir():
+        return []
+    return sorted(str(p.relative_to(root)).replace("\\", "/") for p in root.rglob("*")
+                  if p.is_file() and p.suffix.lower() in LORA_EXTENSIONS)
+
+
 def fit_photo(photo: tk.PhotoImage, box: int) -> tk.PhotoImage:
     """Scales a PhotoImage to fit `box` (Tk scales by whole-number ratios)."""
     longest = max(photo.width(), photo.height())
@@ -102,6 +134,7 @@ def find_phones(known_hosts=(), log=None) -> List[dict]:
             "model": (status or {}).get("model") or props.get("img") or "",
             "online": status is not None, "loaded": bool((status or {}).get("loaded")),
             "img2img": bool((status or {}).get("img2img")),
+            "lora": bool((status or {}).get("lora")),
         })
     return phones
 
@@ -122,6 +155,7 @@ class Device:
     model: str = ""
     use: bool = True
     img2img: bool = True
+    lora: bool = True
     status: str = ""
     made: int = 0
     host: str = ""
@@ -167,6 +201,9 @@ class ImagesTab:
         self.run: Optional[dict] = None       # the running batch
         self.state_path = core.config_dir() / "images.json"
         self.ai = ph.PromptAI(logs, find_server, master_endpoint, no_window)
+        self.lora_dir = ""          # folder with LoRA files
+        self.loras: Dict[str, dict] = {}   # relative path -> {"use": bool, "weight": float}
+        self.server_lora_dir = ""   # the folder the running sd-server was started with
         self.helper: Optional[ph.HelperWindow] = None
         self.build_ui()
         self.load_state()
@@ -190,6 +227,9 @@ class ImagesTab:
                 var.set(state[key])
         self.phones = state.get("phones", [])
         self.local_use = state.get("local_use", True)
+        self.lora_dir = state.get("lora_dir", "")
+        self.loras = state.get("loras", {})
+        self.update_lora_button()
         if state.get("prompt"):
             self.prompt.insert("1.0", state["prompt"])
         self.on_mode()
@@ -200,7 +240,8 @@ class ImagesTab:
                  "device": self.device_var.get(), "mode": self.mode_var.get(), "count": self.count_var.get(),
                  "seed": self.seed_var.get(), "preset": self.preset_var.get(),
                  "prompt": self.prompt.get("1.0", "end").strip(),
-                 "phones": self.phones, "local_use": self.local_use}
+                 "phones": self.phones, "local_use": self.local_use,
+                 "lora_dir": self.lora_dir, "loras": self.loras}
         try:
             self.state_path.write_text(json.dumps(state, indent=1))
         except OSError:
@@ -279,6 +320,8 @@ class ImagesTab:
         tools = ttk.Frame(gen)
         tools.grid(row=0, column=0, columnspan=4, sticky="ew", pady=(0, 6))
         ttk.Button(tools, text="✨ Prompt helper…", command=self.open_helper).pack(side="left")
+        self.lora_btn = ttk.Button(tools, text="LoRAs…", command=self.open_loras)
+        self.lora_btn.pack(side="left", padx=(6, 0))
         self.preset_var = tk.StringVar(value="")
         self.preset_box = ttk.Combobox(tools, textvariable=self.preset_var, values=list(ph.PRESETS),
                                        state="readonly", width=34)
@@ -471,6 +514,21 @@ class ImagesTab:
         fitted.save(buf, format="PNG")
         return base64.b64encode(buf.getvalue()).decode()
 
+    # LoRAs -------------------------------------------------------------------
+
+    def active_loras(self) -> List[tuple]:
+        """(relative path, weight) of the LoRAs ticked for use that still exist."""
+        present = set(list_loras(self.lora_dir))
+        return [(rel, float(v.get("weight", 0.8))) for rel, v in sorted(self.loras.items())
+                if v.get("use") and rel in present]
+
+    def update_lora_button(self):
+        n = len([1 for v in self.loras.values() if v.get("use")])
+        self.lora_btn.configure(text=f"LoRAs ({n} on)…" if n else "LoRAs…")
+
+    def open_loras(self):
+        LoraWindow(self)
+
     # Prompt help -------------------------------------------------------------
 
     def open_helper(self):
@@ -520,6 +578,7 @@ class ImagesTab:
         for p in self.phones:
             out.append(Device(p["id"], p["name"], f"http://{p['host']}:{p['port']}", p.get("model", ""),
                               p.get("use", True), img2img=bool(p.get("img2img")),
+                              lora=bool(p.get("lora")),
                               host=p["host"], port=p["port"]))
         return out
 
@@ -616,7 +675,8 @@ class ImagesTab:
             phone = {"id": f"{host}:{port_n}", "host": host, "port": port_n,
                      "name": (status or {}).get("name") or host, "model": (status or {}).get("model", ""),
                      "online": status is not None, "loaded": bool((status or {}).get("loaded")),
-                     "img2img": bool((status or {}).get("img2img"))}
+                     "img2img": bool((status or {}).get("img2img")),
+                     "lora": bool((status or {}).get("lora"))}
             self.root.after(0, lambda: self.on_added(phone))
 
         threading.Thread(target=work, daemon=True).start()
@@ -687,6 +747,9 @@ class ImagesTab:
         threads = max(2, (os.cpu_count() or 4) // 2)
         args = [str(binary), "-m", model, "--listen-ip", "127.0.0.1", "--listen-port", str(PORT),
                 "-t", str(threads)]
+        self.server_lora_dir = self.lora_dir if Path(self.lora_dir or "-").is_dir() else ""
+        if self.server_lora_dir:
+            args += ["--lora-model-dir", self.server_lora_dir]
         self.logs.put("Starting: " + " ".join(args))
         try:
             proc = subprocess.Popen(args, stdout=subprocess.PIPE, stderr=subprocess.STDOUT, text=True,
@@ -826,9 +889,21 @@ class ImagesTab:
             init_b64 = self.init_png_b64(w, h)
             if not init_b64:
                 return
+        loras = self.active_loras()
+        if loras:
+            no_lora = [d for d in devices if not d.lora]
+            if no_lora:
+                self.logs.put("Can't use LoRAs (update PrivateLM on it): " + ", ".join(d.name for d in no_lora))
+                skipped_devices += no_lora
+                devices = [d for d in devices if d.lora]
+            if any(d.id == LOCAL_ID for d in devices) and self.server_lora_dir != self.lora_dir:
+                messagebox.showinfo("PrivateLM", "The LoRA folder changed since the model was loaded here: "
+                                                 "Unload model and Load model again, then Generate.")
+                return
         if not devices:
             messagebox.showinfo("PrivateLM", "Load the model here, or add a phone with Images for a "
-                                             "laptop on (updated for starting from an image), and tick Use.")
+                                             "laptop on (updated for starting from an image or LoRAs), "
+                                             "and tick Use.")
             return
         self.save_state()
         params = {"negative_prompt": self.neg_var.get(), "width": w, "height": h, "steps": steps,
@@ -836,11 +911,15 @@ class ImagesTab:
         if init_b64:
             params["init_images"] = [init_b64]
             params["denoising_strength"] = round(float(self.strength_var.get()), 2)
+        if loras:
+            # This computer's server names LoRAs by path; phones by SHA-256
+            # (device_loop hashes and sends the files they're missing).
+            params["_loras"] = [(Path(self.lora_dir) / rel, rel, w) for rel, w in loras]
         pending: "queue.Queue[Job]" = queue.Queue()
         for job in jobs:
             pending.put(job)
         run = {"pending": pending, "total": len(jobs), "done": 0, "failed": 0, "stop": False,
-               "statuses": {**{d.id: "Can't start from an image: update the app" for d in skipped_devices},
+               "statuses": {**{d.id: "Can't do this: update the app" for d in skipped_devices},
                             **{d.id: "Starting…" for d in devices}},
                "active": len(devices), "inflight": 0,
                "started": time.time(), "lock": threading.Lock(), "devices": devices}
@@ -861,6 +940,26 @@ class ImagesTab:
         def set_status(text):
             with run["lock"]:
                 run["statuses"][device.id] = text
+
+        loras = params.get("_loras") or []
+        params = {k: v for k, v in params.items() if k != "_loras"}
+        if loras:
+            try:
+                if device.id == LOCAL_ID:
+                    # Lets sd-server see files added to the folder since it started.
+                    urllib.request.urlopen(f"{device.url}/sdapi/v1/loras", timeout=10).read()
+                    params["lora"] = [{"path": rel, "multiplier": w} for _, rel, w in loras]
+                else:
+                    set_status("Checking LoRAs…")
+                    hashed = [(path, file_sha256(path), w) for path, _, w in loras]
+                    params["lora"] = [{"sha256": h, "multiplier": w, "name": path.name} for path, h, w in hashed]
+                    self.send_loras(device, hashed, set_status)
+            except Exception as e:  # noqa: BLE001
+                set_status(f"Stopped: LoRAs: {str(e)[:50]}")
+                self.logs.put(f"{device.name}: couldn't get the LoRAs ready: {e}")
+                with run["lock"]:
+                    run["active"] -= 1
+                return
 
         failures = 0
         while not run["stop"]:
@@ -911,7 +1010,13 @@ class ImagesTab:
                     msg = "Not reachable"
                 if isinstance(e, urllib.error.HTTPError):
                     try:
-                        msg = json.loads(e.read().decode("utf-8", "replace")).get("error", msg)
+                        err = json.loads(e.read().decode("utf-8", "replace"))
+                        msg = err.get("error", msg)
+                        if e.code == 412 and err.get("missing") and loras and device.id != LOCAL_ID:
+                            # The phone lost a LoRA (app reinstalled, storage cleared): send it again.
+                            hashed = [(path, file_sha256(path), w) for path, _, w in loras]
+                            self.send_loras(device, hashed, set_status)
+                            failures -= 1
                     except Exception:  # noqa: BLE001
                         pass
                 self.logs.put(f"{device.name}: image #{job.index + 1} failed: {msg}")
@@ -928,6 +1033,24 @@ class ImagesTab:
             run["active"] -= 1
             if run["statuses"].get(device.id, "").startswith("Making"):
                 run["statuses"][device.id] = f"{device.made} made"
+
+    def send_loras(self, device: Device, hashed: List[tuple], set_status):
+        """Sends a phone the LoRA files it doesn't have yet (by SHA-256)."""
+        with urllib.request.urlopen(f"{device.url}/loras", timeout=10) as r:
+            have = set(json.load(r).get("loras", []))
+        for path, sha, _ in hashed:
+            if sha in have:
+                continue
+            size = path.stat().st_size
+            set_status(f"Sending {path.name} ({size / 1e6:.0f} MB)…")
+            self.logs.put(f"Sending LoRA {path.name} to {device.name}")
+            ext = path.suffix.lstrip(".").lower()
+            with open(path, "rb") as f:
+                req = urllib.request.Request(f"{device.url}/loras/{sha}?ext={ext}", data=f, method="PUT",
+                                             headers={"Content-Length": str(size),
+                                                      "Content-Type": "application/octet-stream"})
+                with urllib.request.urlopen(req, timeout=1800) as r:
+                    r.read()
 
     def tick(self):
         run = self.run
@@ -1046,3 +1169,107 @@ class ImagesTab:
     @property
     def running(self) -> bool:
         return self.server is not None
+
+
+class LoraWindow:
+    """Pick the LoRA folder, which LoRAs to use and how strongly."""
+
+    def __init__(self, tab: "ImagesTab"):
+        self.tab = tab
+        win = tk.Toplevel(tab.root)
+        win.title("LoRAs")
+        win.transient(tab.root)
+        win.resizable(False, False)
+        self.win = win
+        f = ttk.Frame(win, padding=14)
+        f.pack(fill="both", expand=True)
+        f.columnconfigure(1, weight=1)
+        ttk.Label(f, text="LoRAs add a style, character or detail to the model. Tick the ones to use and "
+                          "set how strongly (around 0.6–1.0). Many need their trigger word in the prompt: "
+                          "see where you downloaded the LoRA.", style="Muted.TLabel", wraplength=460,
+                  justify="left").grid(row=0, column=0, columnspan=3, sticky="w", pady=(0, 8))
+        ttk.Label(f, text="Folder").grid(row=1, column=0, sticky="w")
+        self.dir_var = tk.StringVar(value=tab.lora_dir)
+        ttk.Entry(f, textvariable=self.dir_var, state="readonly", width=44).grid(row=1, column=1, sticky="ew")
+        ttk.Button(f, text="Choose…", command=self.choose_dir).grid(row=1, column=2, padx=(6, 0))
+        self.tree = ttk.Treeview(f, columns=("use", "name", "weight"), show="headings", height=8,
+                                 selectmode="browse")
+        for col, text, width in (("use", "Use", 40), ("name", "LoRA", 300), ("weight", "Weight", 70)):
+            self.tree.heading(col, text=text)
+            self.tree.column(col, width=width, anchor="center" if col != "name" else "w",
+                             stretch=col == "name")
+        self.tree.grid(row=2, column=0, columnspan=3, sticky="ew", pady=(8, 4))
+        self.tree.bind("<ButtonRelease-1>", self.on_click)
+        self.tree.bind("<<TreeviewSelect>>", lambda _: self.on_select())
+        row = ttk.Frame(f)
+        row.grid(row=3, column=0, columnspan=3, sticky="w", pady=(4, 0))
+        ttk.Label(row, text="Weight of the selected LoRA").pack(side="left")
+        self.weight_var = tk.StringVar(value="0.8")
+        self.weight_box = ttk.Spinbox(row, textvariable=self.weight_var, from_=-2.0, to=2.0, increment=0.05,
+                                      width=6, command=self.on_weight)
+        self.weight_box.pack(side="left", padx=(6, 0))
+        self.weight_box.bind("<KeyRelease>", lambda _: self.on_weight())
+        self.note = tk.StringVar(value="")
+        ttk.Label(f, textvariable=self.note, style="Muted.TLabel", wraplength=460, justify="left")\
+            .grid(row=4, column=0, columnspan=3, sticky="w", pady=(8, 0))
+        buttons = ttk.Frame(f)
+        buttons.grid(row=5, column=0, columnspan=3, sticky="e", pady=(10, 0))
+        ttk.Button(buttons, text="Refresh", command=self.refresh).pack(side="left")
+        ttk.Button(buttons, text="Close", command=self.close).pack(side="left", padx=(8, 0))
+        win.protocol("WM_DELETE_WINDOW", self.close)
+        self.refresh()
+
+    def choose_dir(self):
+        path = filedialog.askdirectory(parent=self.win, title="Folder with LoRA files")
+        if path:
+            self.tab.lora_dir = path
+            self.dir_var.set(path)
+            self.refresh()
+
+    def refresh(self):
+        files = list_loras(self.tab.lora_dir)
+        self.tree.delete(*self.tree.get_children())
+        for rel in files:
+            v = self.tab.loras.setdefault(rel, {"use": False, "weight": 0.8})
+            self.tree.insert("", "end", iid=rel, values=("☑" if v.get("use") else "☐", rel,
+                                                         f"{float(v.get('weight', 0.8)):g}"))
+        notes = []
+        if not self.tab.lora_dir:
+            notes.append("Choose the folder where you keep LoRA files (.safetensors).")
+        elif not files:
+            notes.append("No LoRA files in this folder.")
+        if self.tab.server and self.tab.server_lora_dir != self.tab.lora_dir:
+            notes.append("To use this folder on this computer, Unload model and Load model again.")
+        notes.append("Phones get the LoRAs they need sent to them when you Generate (once per LoRA).")
+        self.note.set(" ".join(notes))
+        self.tab.update_lora_button()
+        self.tab.save_state()
+
+    def on_click(self, event):
+        iid = self.tree.identify_row(event.y)
+        if iid and self.tree.identify_column(event.x) == "#1":
+            v = self.tab.loras[iid]
+            v["use"] = not v.get("use")
+            self.tree.set(iid, "use", "☑" if v["use"] else "☐")
+            self.tab.update_lora_button()
+            self.tab.save_state()
+
+    def on_select(self):
+        sel = self.tree.selection()
+        if sel:
+            self.weight_var.set(f"{float(self.tab.loras[sel[0]].get('weight', 0.8)):g}")
+
+    def on_weight(self):
+        sel = self.tree.selection()
+        try:
+            weight = max(-2.0, min(2.0, float(self.weight_var.get())))
+        except ValueError:
+            return
+        if sel:
+            self.tab.loras[sel[0]]["weight"] = weight
+            self.tree.set(sel[0], "weight", f"{weight:g}")
+            self.tab.save_state()
+
+    def close(self):
+        self.tab.save_state()
+        self.win.destroy()

@@ -89,6 +89,16 @@ refine a gallery favorite. Phones need the updated PrivateLM app for this
 (older ones are skipped), and an iPhone needs the Metal image backend, not
 CoreML.
 
+**LoRAs.** Click **LoRAs…**, choose the folder where you keep LoRA files
+(`.safetensors`), tick the ones to use and set each one's weight (how
+strongly it applies; 0.6–1.0 is typical, negative values push away from
+it). Many LoRAs need a trigger word in the prompt: check the page you
+downloaded it from. If you change the folder while the model is loaded,
+Unload and Load the model again. Phones get the LoRAs a run needs sent to
+them over the Wi-Fi when you click Generate, once per LoRA (they keep them
+for next time), and need the updated PrivateLM app. LoRAs must match the
+model family (SD 1.5 LoRAs for SD 1.5 models like CyberRealistic).
+
 **Phones make images too.** On each phone, load the same image model in
 PrivateLM, then open **Phone cluster** and turn on **Images for a laptop**.
 On the laptop, click **Find nearby** under **Devices making images** (or
