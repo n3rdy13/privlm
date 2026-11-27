@@ -120,7 +120,7 @@ jobs:
         working-directory: tools/laptop_worker
         run: |
           python -m pip install --upgrade pip
-          python -m pip install pyinstaller zeroconf qrcode psutil
+          python -m pip install pyinstaller zeroconf qrcode psutil pillow
           python -m PyInstaller --noconfirm --onefile --windowed --name PrivateLM-Laptop `
             --collect-submodules zeroconf `
             --add-binary "../../build/server/bin/Release/llama-server.exe;bin/server" `

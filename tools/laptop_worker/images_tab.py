@@ -101,6 +101,7 @@ def find_phones(known_hosts=(), log=None) -> List[dict]:
             "name": (status or {}).get("name") or props.get("model") or host,
             "model": (status or {}).get("model") or props.get("img") or "",
             "online": status is not None, "loaded": bool((status or {}).get("loaded")),
+            "img2img": bool((status or {}).get("img2img")),
         })
     return phones
 
@@ -120,6 +121,7 @@ class Device:
     url: str           # base URL, e.g. http://192.168.1.5:50061
     model: str = ""
     use: bool = True
+    img2img: bool = True
     status: str = ""
     made: int = 0
     host: str = ""
@@ -299,6 +301,33 @@ class ImagesTab:
         self.neg_var = tk.StringVar(value="blurry, low quality, deformed")
         ttk.Entry(gen, textvariable=self.neg_var).grid(row=3, column=1, columnspan=3, sticky="ew", pady=2)
 
+        # Image-to-image
+        init = ttk.Frame(gen)
+        init.grid(row=4, column=0, columnspan=4, sticky="ew", pady=(4, 2))
+        self.init_var = tk.BooleanVar(value=False)
+        ttk.Checkbutton(init, text="Start from an image", variable=self.init_var,
+                        command=self.on_init_toggle).grid(row=0, column=0, sticky="w")
+        self.init_thumb = tk.Label(init, width=4, height=2, bg="#e0e0e0", text="", relief="flat")
+        self.init_thumb.grid(row=0, column=1, rowspan=2, padx=(8, 6))
+        self.init_choose = ttk.Button(init, text="Choose…", command=self.choose_init)
+        self.init_choose.grid(row=0, column=2, sticky="w")
+        self.init_use = ttk.Button(init, text="Use selected", command=self.use_selected_init)
+        self.init_use.grid(row=0, column=3, sticky="w", padx=(6, 0))
+        strength = ttk.Frame(init)
+        strength.grid(row=1, column=2, columnspan=2, sticky="w", pady=(4, 0))
+        ttk.Label(strength, text="Change: a little").pack(side="left")
+        self.strength_var = tk.DoubleVar(value=0.55)
+        self.strength_scale = ttk.Scale(strength, from_=0.1, to=1.0, variable=self.strength_var, length=120,
+                                        command=lambda _: self.strength_label.set(f"{self.strength_var.get():.2f}"))
+        self.strength_scale.pack(side="left", padx=4)
+        ttk.Label(strength, text="a lot").pack(side="left")
+        self.strength_label = tk.StringVar(value="0.55")
+        self.strength_var.trace_add("write", lambda *_: self.strength_label.set(f"{self.strength_var.get():.2f}"))
+        ttk.Label(strength, textvariable=self.strength_label, width=5, style="Muted.TLabel").pack(side="left", padx=(6, 0))
+        self.init_image = None      # PIL image
+        self.init_photo = None
+        self.on_init_toggle()
+
         self.size_var = tk.StringVar(value=SIZES[0])
         self.steps_var = tk.StringVar(value="20")
         self.cfg_var = tk.StringVar(value="7")
@@ -315,7 +344,7 @@ class ImagesTab:
             (("Seed", ttk.Entry(gen, textvariable=self.seed_var, width=12)),
              (self.count_label, ttk.Spinbox(gen, textvariable=self.count_var, from_=1, to=100, width=5))),
         )
-        for r, pair in enumerate(grid, 4):
+        for r, pair in enumerate(grid, 5):
             for c, (label, widget) in enumerate(pair):
                 if isinstance(label, tk.StringVar):
                     ttk.Label(gen, textvariable=label).grid(row=r, column=c * 2, sticky="w", pady=2, padx=(0, 6))
@@ -324,10 +353,10 @@ class ImagesTab:
                 widget.grid(row=r, column=c * 2 + 1, sticky="w", pady=2, padx=(0, 12))
         self.seed_hint = tk.StringVar(value="−1: a random seed for each image")
         ttk.Label(gen, textvariable=self.seed_hint, style="Muted.TLabel")\
-            .grid(row=7, column=0, columnspan=4, sticky="w")
+            .grid(row=8, column=0, columnspan=4, sticky="w")
 
         buttons = ttk.Frame(gen)
-        buttons.grid(row=8, column=0, columnspan=4, sticky="ew", pady=(8, 2))
+        buttons.grid(row=9, column=0, columnspan=4, sticky="ew", pady=(8, 2))
         self.gen_btn = ttk.Button(buttons, text="Generate", command=self.generate)
         self.gen_btn.pack(side="left")
         self.stop_btn = ttk.Button(buttons, text="Stop", command=self.stop_run)
@@ -336,7 +365,7 @@ class ImagesTab:
         ttk.Button(buttons, text="Open folder", command=self.open_folder).pack(side="left", padx=(8, 0))
         self.gen_status = tk.StringVar(value="")
         ttk.Label(gen, textvariable=self.gen_status, style="Muted.TLabel", wraplength=440, justify="left")\
-            .grid(row=9, column=0, columnspan=4, sticky="w")
+            .grid(row=10, column=0, columnspan=4, sticky="w")
 
         # Preview + gallery
         preview = ttk.LabelFrame(right, text="Preview", padding=8)
@@ -374,6 +403,73 @@ class ImagesTab:
             self.prompt_label.set("Prompt")
             self.count_label.set("Images")
             self.seed_hint.set("−1: a random seed for each image; a number N gives seeds N, N+1, …")
+
+    # Image-to-image ----------------------------------------------------------
+
+    def on_init_toggle(self):
+        flag = ["!disabled"] if self.init_var.get() else ["disabled"]
+        for w in (self.init_choose, self.init_use, self.strength_scale):
+            w.state(flag)
+
+    def _pil(self):
+        try:
+            from PIL import Image  # type: ignore
+            return Image
+        except ImportError:
+            messagebox.showerror("PrivateLM", "Starting from an image needs Pillow: pip install pillow")
+            return None
+
+    def set_init_image(self, image, label: str):
+        Image = self._pil()
+        if not Image:
+            return
+        self.init_image = image.convert("RGB")
+        thumb = self.init_image.copy()
+        thumb.thumbnail((40, 40))
+        import io
+        buf = io.BytesIO()
+        thumb.save(buf, format="PNG")
+        self.init_photo = tk.PhotoImage(data=base64.b64encode(buf.getvalue()).decode())
+        self.init_thumb.configure(image=self.init_photo, width=40, height=40)
+        self.init_var.set(True)
+        self.on_init_toggle()
+        self.gen_status.set(f"Starting image: {label}")
+
+    def choose_init(self):
+        Image = self._pil()
+        if not Image:
+            return
+        path = filedialog.askopenfilename(title="Choose a starting image", filetypes=[
+            ("Images", "*.png *.jpg *.jpeg *.webp *.bmp"), ("All files", "*.*")])
+        if not path:
+            return
+        try:
+            with Image.open(path) as im:
+                self.set_init_image(im.copy(), Path(path).name)
+        except Exception as e:  # noqa: BLE001
+            messagebox.showerror("PrivateLM", f"Can't open this image:\n\n{e}")
+
+    def use_selected_init(self):
+        Image = self._pil()
+        if not Image:
+            return
+        if not self.selected:
+            messagebox.showinfo("PrivateLM", "Click an image in the gallery first.")
+            return
+        import io
+        self.set_init_image(Image.open(io.BytesIO(self.selected.png)), f"gallery image, seed {self.selected.seed}")
+
+    def init_png_b64(self, w: int, h: int) -> Optional[str]:
+        """The starting image cropped to the output's shape and resized to it."""
+        Image = self._pil()
+        if not Image or self.init_image is None:
+            return None
+        from PIL import ImageOps  # type: ignore
+        fitted = ImageOps.fit(self.init_image, (w, h), method=Image.LANCZOS)
+        import io
+        buf = io.BytesIO()
+        fitted.save(buf, format="PNG")
+        return base64.b64encode(buf.getvalue()).decode()
 
     # Prompt help -------------------------------------------------------------
 
@@ -423,7 +519,8 @@ class ImagesTab:
                           self.local_use))
         for p in self.phones:
             out.append(Device(p["id"], p["name"], f"http://{p['host']}:{p['port']}", p.get("model", ""),
-                              p.get("use", True), host=p["host"], port=p["port"]))
+                              p.get("use", True), img2img=bool(p.get("img2img")),
+                              host=p["host"], port=p["port"]))
         return out
 
     def refresh_devices(self, statuses: Optional[Dict[str, str]] = None):
@@ -518,7 +615,8 @@ class ImagesTab:
             status = phone_status(host, port_n)
             phone = {"id": f"{host}:{port_n}", "host": host, "port": port_n,
                      "name": (status or {}).get("name") or host, "model": (status or {}).get("model", ""),
-                     "online": status is not None, "loaded": bool((status or {}).get("loaded"))}
+                     "online": status is not None, "loaded": bool((status or {}).get("loaded")),
+                     "img2img": bool((status or {}).get("img2img"))}
             self.root.after(0, lambda: self.on_added(phone))
 
         threading.Thread(target=work, daemon=True).start()
@@ -714,18 +812,37 @@ class ImagesTab:
         devices = [d for d in self.devices() if d.use]
         if self.local_use and not self.ready:
             devices = [d for d in devices if d.id != LOCAL_ID]
+        init_b64 = None
+        skipped_devices = []
+        if self.init_var.get():
+            if self.init_image is None:
+                messagebox.showinfo("PrivateLM", "Choose a starting image, or untick Start from an image.")
+                return
+            skipped_devices = [d for d in devices if not d.img2img]
+            skipped = [d.name for d in skipped_devices]
+            devices = [d for d in devices if d.img2img]
+            if skipped:
+                self.logs.put("Can't start from an image (update PrivateLM on it): " + ", ".join(skipped))
+            init_b64 = self.init_png_b64(w, h)
+            if not init_b64:
+                return
         if not devices:
             messagebox.showinfo("PrivateLM", "Load the model here, or add a phone with Images for a "
-                                             "laptop on, and tick Use.")
+                                             "laptop on (updated for starting from an image), and tick Use.")
             return
         self.save_state()
         params = {"negative_prompt": self.neg_var.get(), "width": w, "height": h, "steps": steps,
                   "cfg_scale": cfg, "sampler_name": self.sampler_var.get()}
+        if init_b64:
+            params["init_images"] = [init_b64]
+            params["denoising_strength"] = round(float(self.strength_var.get()), 2)
         pending: "queue.Queue[Job]" = queue.Queue()
         for job in jobs:
             pending.put(job)
         run = {"pending": pending, "total": len(jobs), "done": 0, "failed": 0, "stop": False,
-               "statuses": {d.id: "Starting…" for d in devices}, "active": len(devices), "inflight": 0,
+               "statuses": {**{d.id: "Can't start from an image: update the app" for d in skipped_devices},
+                            **{d.id: "Starting…" for d in devices}},
+               "active": len(devices), "inflight": 0,
                "started": time.time(), "lock": threading.Lock(), "devices": devices}
         self.run = run
         self.keep_awake(True)
@@ -761,7 +878,8 @@ class ImagesTab:
             set_status(f"Making #{job.index + 1}")
             started = time.time()
             body = {**params, "prompt": job.prompt, "seed": job.seed, "batch_size": 1}
-            req = urllib.request.Request(f"{device.url}/sdapi/v1/txt2img", data=json.dumps(body).encode(),
+            endpoint = "img2img" if "init_images" in params else "txt2img"
+            req = urllib.request.Request(f"{device.url}/sdapi/v1/{endpoint}", data=json.dumps(body).encode(),
                                          headers={"Content-Type": "application/json"})
             try:
                 with urllib.request.urlopen(req, timeout=1800) as r:

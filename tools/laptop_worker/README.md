@@ -78,6 +78,17 @@ for the kind of model: choosing a model picks one automatically, e.g.
 *Photo-realistic* for CyberRealistic (DPM++ 2M, 28 steps, CFG 6,
 512 × 768).
 
+**Start from an image (img2img).** Tick **Start from an image**, then
+**Choose…** a picture (PNG, JPEG, WebP) or click an image in the gallery and
+**Use selected**. The prompt says what you want it to become, and **Change**
+sets how much: a little (around 0.3) keeps the picture and adjusts details
+and style, a lot (0.7 and up) keeps only its rough layout and colors. The
+picture is cropped to the chosen size's shape. Variations and the Queue work
+the same way, so you can make several versions of one picture at once, or
+refine a gallery favorite. Phones need the updated PrivateLM app for this
+(older ones are skipped), and an iPhone needs the Metal image backend, not
+CoreML.
+
 **Phones make images too.** On each phone, load the same image model in
 PrivateLM, then open **Phone cluster** and turn on **Images for a laptop**.
 On the laptop, click **Find nearby** under **Devices making images** (or
