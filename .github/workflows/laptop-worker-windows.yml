@@ -1,6 +1,7 @@
 # Builds PrivateLM-Laptop.exe: a Windows app that runs a model on the laptop
-# with phones as workers (Master tab), or shares the laptop's GPU (Vulkan) or
-# CPU with a master phone (Worker tab). Download it from the run's Artifacts.
+# with phones as workers (Master tab), makes images with Stable Diffusion
+# models (Images tab), or shares the laptop's GPU (Vulkan) or CPU with a
+# master phone (Worker tab). Download it from the run's Artifacts.
 name: Laptop app (Windows)
 
 on:
@@ -11,6 +12,7 @@ on:
       - 'tools/laptop_worker/**'
       - '.github/workflows/laptop-worker-windows.yml'
       - 'local_plugins/llama_flutter_android/android/src/main/cpp/llama.cpp/ggml/**'
+      - 'local_plugins/sd_flutter_android/android/src/main/cpp/stable-diffusion.cpp'
 
 concurrency:
   group: laptop-worker-windows-${{ github.ref }}
@@ -21,6 +23,7 @@ jobs:
     runs-on: windows-2022
     timeout-minutes: 60
     env:
+      SD_DIR: local_plugins/sd_flutter_android/android/src/main/cpp/stable-diffusion.cpp
       VULKAN_VERSION: 1.4.313.2
       # Static C++ runtime and no OpenMP DLL: runs without installing the
       # Visual C++ redistributable. AVX2 covers laptops from 2013 on.
@@ -81,6 +84,24 @@ jobs:
           cmake --build build/server --config Release --target llama-server -j 4
           build/server/bin/Release/llama-server.exe --version
 
+      # The Images tab's sd-server comes from the app's own
+      # stable-diffusion.cpp (the image generation plugin's submodule).
+      - name: Get stable-diffusion.cpp
+        shell: bash
+        run: |
+          git submodule update --init --depth 50 "$SD_DIR"
+          git -C "$SD_DIR" submodule update --init --depth 50 ggml thirdparty/libwebm
+
+      - name: Build sd-server (CPU and Vulkan)
+        shell: pwsh
+        run: |
+          $sd = "-DSD_SERVER_BUILD_FRONTEND=OFF", "-DBUILD_SHARED_LIBS=OFF"
+          cmake -S $env:SD_DIR -B build/sd-cpu $($env:CPU_FLAGS -split ' ') $sd
+          cmake --build build/sd-cpu --config Release --target sd-server -j 4
+          cmake -S $env:SD_DIR -B build/sd-vulkan $($env:CPU_FLAGS -split ' ') $sd -DSD_VULKAN=ON
+          cmake --build build/sd-vulkan --config Release --target sd-server -j 4
+          build/sd-cpu/bin/Release/sd-server.exe --version
+
       - name: Check the workers run
         shell: pwsh
         run: |
@@ -101,6 +122,8 @@ jobs:
           python -m PyInstaller --noconfirm --onefile --windowed --name PrivateLM-Laptop `
             --collect-submodules zeroconf `
             --add-binary "../../build/server/bin/Release/llama-server.exe;bin/server" `
+            --add-binary "../../build/sd-cpu/bin/Release/sd-server.exe;bin/sd-cpu" `
+            --add-binary "../../build/sd-vulkan/bin/Release/sd-server.exe;bin/sd-vulkan" `
             --add-binary "../../build/cpu/Release/privatelm-worker.exe;bin/cpu" `
             --add-binary "../../build/vulkan/Release/privatelm-worker.exe;bin/vulkan" `
             worker_gui.py

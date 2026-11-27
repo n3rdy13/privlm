@@ -125,6 +125,43 @@ def build_server(rebuild: bool = False, log=print) -> Path:
     return server_binary_path()
 
 
+# The app's stable-diffusion.cpp (a git submodule): the Images tab's sd-server
+# is built from it, so laptop and phones make images the same way.
+SD_DIR = HERE.parent.parent / "local_plugins" / "sd_flutter_android" / "android" / "src" / "main" / "cpp" / "stable-diffusion.cpp"
+
+
+def sd_server_path(variant: str) -> Path:
+    build_dir = HERE / "build" / f"sd-{variant}" / "bin"
+    name = "sd-server.exe" if platform.system() == "Windows" else "sd-server"
+    for candidate in (build_dir / name, build_dir / "Release" / name):
+        if candidate.exists():
+            return candidate
+    return build_dir / name
+
+
+def build_sd_server(variant: str = "cpu", log=print) -> Path:
+    """stable-diffusion.cpp's sd-server, from the app's own copy (from
+    source; the Windows app ships it)."""
+    binary = sd_server_path(variant)
+    if binary.exists():
+        return binary
+    if not (SD_DIR / "ggml" / "CMakeLists.txt").exists():
+        log("Getting stable-diffusion.cpp…")
+        subprocess.run(["git", "-C", str(HERE.parent.parent), "submodule", "update", "--init",
+                        "local_plugins/sd_flutter_android/android/src/main/cpp/stable-diffusion.cpp"], check=True)
+        subprocess.run(["git", "-C", str(SD_DIR), "submodule", "update", "--init", "ggml",
+                        "thirdparty/libwebm"], check=True)
+    log("Building sd-server (a few minutes, first time only)…")
+    out = HERE / "build" / f"sd-{variant}"
+    flags = ["-DCMAKE_BUILD_TYPE=Release", "-DSD_SERVER_BUILD_FRONTEND=OFF", "-DBUILD_SHARED_LIBS=OFF"]
+    if variant == "vulkan":
+        flags.append("-DSD_VULKAN=ON")
+    subprocess.run(["cmake", "-S", str(SD_DIR), "-B", str(out), *flags], check=True, capture_output=True)
+    subprocess.run(["cmake", "--build", str(out), "--config", "Release", "--target", "sd-server",
+                    "-j", str(os.cpu_count() or 4)], check=True, capture_output=True)
+    return sd_server_path(variant)
+
+
 def lan_address() -> str:
     """This computer's address on the Wi-Fi (no packets are sent)."""
     with socket.socket(socket.AF_INET, socket.SOCK_DGRAM) as s:

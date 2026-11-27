@@ -5,6 +5,10 @@ Lets a laptop join a PrivateLM phone cluster in either role:
 - **Master:** the laptop runs the model, with part of its layers on phones
   set to Worker, and serves it as an OpenAI-compatible API. Chat with it from
   the PrivateLM app (Custom API) or the laptop's browser.
+- **Images:** the laptop makes images with a Stable Diffusion model
+  (`.safetensors`, `.ckpt` or `.gguf`, such as CyberRealistic), like the
+  app's image generation. Image models run on one device: the phone cluster
+  can't split them.
 - **Worker:** the laptop lends its GPU (or CPU) to a master phone, like a
   phone set to Worker.
 
@@ -39,6 +43,16 @@ memory and speed. A model that fits on the laptop runs there alone, because
 every word would otherwise cross the Wi-Fi to each phone; tick **Use the
 phones even if the model fits here** to share it anyway. The master runs on
 the laptop's CPU.
+
+### Images
+
+On the **Images** tab, click **Browse…** and pick the model, then **Load
+model**. Write a prompt and click **Generate**. Each image is saved to
+`Pictures\PrivateLM`. Size, steps, CFG, sampler and seed work as in other
+Stable Diffusion apps; SD 1.5 models like CyberRealistic look best at 512 ×
+512 or 512 × 768 with 20–30 steps. **Automatic** uses the GPU (Vulkan) if
+the laptop has one, else the CPU; integrated graphics can be faster or
+slower than the CPU, so try both.
 
 ### Laptop as worker
 

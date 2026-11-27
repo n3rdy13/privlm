@@ -25,6 +25,7 @@ from tkinter import messagebox, ttk
 from urllib.parse import urlencode
 
 import privatelm_worker as core
+from images_tab import ImagesTab
 from master_tab import MasterTab
 
 IS_WINDOWS = platform.system() == "Windows"
@@ -56,6 +57,27 @@ def bundled_binary(variant: str, name: str = "privatelm-worker"):
         shutil.copy2(src, dst)
         stamp.write_text(digest)
     return dst
+
+
+def find_sd_server(variant: str, status) -> Path:
+    """sd-server for the Images tab ("vulkan" or "cpu"): built into the .exe,
+    or built from the app's stable-diffusion.cpp the first time."""
+    if FROZEN:
+        binary = bundled_binary(f"sd-{variant}", "sd-server") or bundled_binary("sd-cpu", "sd-server")
+        if not binary:
+            raise RuntimeError("This copy of PrivateLM Laptop has no sd-server.")
+        return binary
+    return core.build_sd_server("cpu", log=status)
+
+
+def has_gpu() -> bool:
+    """A GPU the bundled Vulkan builds can use (the .exe only)."""
+    if not FROZEN:
+        return False
+    try:
+        return measure(DEVICE_AUTO)[2]["type"] == "gpu"
+    except Exception:  # noqa: BLE001
+        return False
 
 
 def find_server(status) -> Path:
@@ -451,8 +473,9 @@ class App:
         self.logs = queue.Queue()
         notebook = ttk.Notebook(outer)
         notebook.pack(fill="both", expand=True)
-        worker_frame, master_frame = ttk.Frame(notebook), ttk.Frame(notebook)
+        worker_frame, master_frame, images_frame = ttk.Frame(notebook), ttk.Frame(notebook), ttk.Frame(notebook)
         notebook.add(master_frame, text="  Master  ")
+        notebook.add(images_frame, text="  Images  ")
         notebook.add(worker_frame, text="  Worker  ")
         self.notebook = notebook
 
@@ -460,6 +483,8 @@ class App:
         self.master = MasterTab(root, master_frame, self.logs,
                                 measure_cpu=lambda: measure(DEVICE_CPU)[2],
                                 find_server=find_server, keep_awake=keep_awake, no_window=NO_WINDOW)
+        self.images = ImagesTab(root, images_frame, self.logs, find_sd_server=find_sd_server,
+                                has_gpu=has_gpu, keep_awake=keep_awake, no_window=NO_WINDOW)
         self.worker.is_busy = lambda: self.master.running
         self.master.is_busy = lambda: self.worker.server is not None
 
@@ -500,6 +525,7 @@ class App:
 
     def on_close(self):
         self.master.shutdown()
+        self.images.shutdown()
         self.worker.shutdown()
         self.root.destroy()
 
