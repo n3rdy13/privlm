@@ -103,6 +103,17 @@ class ClusterChannel(
                 ))
             }
             "localFreeRamMb" -> result.success(ClusterWorkerService.availableRamMb(context))
+            "advertiseImageWorker" -> {
+                advertiseImageWorker(
+                    call.argument<Int>("port") ?: 50061,
+                    call.argument<Map<String, String>>("txt") ?: emptyMap(),
+                )
+                result.success(null)
+            }
+            "stopImageWorkerAdvert" -> {
+                stopImageWorkerAdvert()
+                result.success(null)
+            }
             "setKeepScreenOn" -> {
                 // A worker is only at full speed while PrivateLM is on screen
                 // (it borrows the app's priority), so keep the screen on.
@@ -204,7 +215,47 @@ class ClusterChannel(
         }
     }
 
+    // Image worker: the app serves image generation over HTTP (Dart); this
+    // only announces it on the Wi-Fi so a laptop's "Find nearby" sees it.
+    private var imageAdvert: NsdManager.RegistrationListener? = null
+
+    private fun advertiseImageWorker(port: Int, txt: Map<String, String>) {
+        stopImageWorkerAdvert()
+        val nsd = context.getSystemService(Context.NSD_SERVICE) as? NsdManager ?: return
+        val info = NsdServiceInfo().apply {
+            serviceName = "PrivateLM Images ${Build.MODEL}"
+            serviceType = "_privatelm-img._tcp."
+            setPort(port)
+            for ((key, value) in txt) setAttribute(key, value)
+            setAttribute("id", ClusterWorkerService.workerId(context))
+        }
+        val listener = object : NsdManager.RegistrationListener {
+            override fun onServiceRegistered(info: NsdServiceInfo) {
+                Log.i(TAG, "Image worker advertised as ${info.serviceName}")
+            }
+            override fun onRegistrationFailed(info: NsdServiceInfo, code: Int) {
+                Log.w(TAG, "Image worker advertising failed: $code")
+            }
+            override fun onServiceUnregistered(info: NsdServiceInfo) {}
+            override fun onUnregistrationFailed(info: NsdServiceInfo, code: Int) {}
+        }
+        imageAdvert = listener
+        nsd.registerService(info, NsdManager.PROTOCOL_DNS_SD, listener)
+    }
+
+    private fun stopImageWorkerAdvert() {
+        val listener = imageAdvert ?: return
+        imageAdvert = null
+        val nsd = context.getSystemService(Context.NSD_SERVICE) as? NsdManager ?: return
+        try {
+            nsd.unregisterService(listener)
+        } catch (e: IllegalArgumentException) {
+            // Never registered.
+        }
+    }
+
     fun dispose() {
+        stopImageWorkerAdvert()
         runCatching { context.unbindService(workerPriority) }
         setLowLatencyWifi(false)
         channel.setMethodCallHandler(null)

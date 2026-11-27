@@ -137,6 +137,14 @@ class LlamaCluster {
   static Future<void> setKeepScreenOn(bool on) =>
       _channel.invokeMethod('setKeepScreenOn', {'on': on});
 
+  /// Announces this phone's image worker (an HTTP server the app runs on
+  /// [port]) on the Wi-Fi as `_privatelm-img._tcp`, with [txt] details.
+  static Future<void> advertiseImageWorker(int port, Map<String, String> txt) =>
+      _channel.invokeMethod('advertiseImageWorker', {'port': port, 'txt': txt});
+
+  static Future<void> stopImageWorkerAdvert() =>
+      _channel.invokeMethod('stopImageWorkerAdvert');
+
   static Future<int> localFreeRamMb() async =>
       await _channel.invokeMethod<int>('localFreeRamMb') ?? 0;
 

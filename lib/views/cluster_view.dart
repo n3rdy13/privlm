@@ -8,6 +8,8 @@ import 'package:qr_flutter/qr_flutter.dart';
 
 import '../core/ui.dart';
 import '../services/cluster_service.dart';
+import '../services/image_worker_service.dart';
+import '../services/local_image_service.dart';
 
 /// Phone cluster: pick Master (runs the model) or Worker (lends this phone),
 /// and pair them by scanning the worker's QR code.
@@ -74,6 +76,7 @@ class _ClusterViewState extends State<ClusterView> {
               ClusterRole.master => _masterSection(context),
               ClusterRole.worker => _workerSection(context),
             },
+            if (Get.isRegistered<ImageWorkerService>()) ..._imageWorkerSection(context),
           ],
         );
       }),
@@ -181,6 +184,61 @@ class _ClusterViewState extends State<ClusterView> {
           : 'Keep this phone plugged in and on the same Wi-Fi, with PrivateLM '
               'open: the screen stays on while sharing, because Android slows '
               'background work. Set Phone cluster to Off to stop.'),
+    ];
+  }
+
+  // ── Image worker ───────────────────────────────────────────────────────
+
+  /// Lets a laptop (PrivateLM Laptop's Images tab) send this phone image
+  /// jobs, so several devices make images at once.
+  List<Widget> _imageWorkerSection(BuildContext context) {
+    final t = AppTokens.of(context);
+    final images = Get.find<ImageWorkerService>();
+    final local = Get.find<LocalImageService>();
+    final on = images.running.value;
+    final model = local.loadedModelName.value;
+    final subtitle = on
+        ? images.status.value
+        : local.isModelLoaded.value
+            ? 'Uses $model'
+            : 'Load an image model first';
+    return [
+      const SizedBox(height: 20),
+      const SectionHeader('Images for a laptop'),
+      AppGroup(children: [
+        AppRow(
+          icon: Icons.image_outlined,
+          title: 'Make images for a laptop',
+          subtitle: subtitle,
+          trailing: Switch(
+            value: on,
+            onChanged: (v) async {
+              if (!v) return images.stop();
+              try {
+                await images.start();
+              } on StateError catch (e) {
+                showToast('Images for a laptop', e.message, tone: ToastTone.warning);
+              }
+            },
+          ),
+        ),
+        if (on)
+          AppRow(
+            leading: images.busy.value
+                ? _PulsingDot(color: t.green)
+                : StatusDot(t.green, size: 8),
+            title: images.busy.value ? 'Working' : 'Ready',
+            subtitle: '${cluster.wifiAddress.value ?? 'No Wi-Fi'}:${ImageWorkerService.port}'
+                ' · ${images.served.value} made',
+          ),
+      ]),
+      SectionFootnote(on
+          ? 'On the laptop, open PrivateLM Laptop, then Images, and tap Find '
+              'nearby. Keep PrivateLM open: the screen stays on while this is on. '
+              'Anyone on this Wi-Fi can send it jobs.'
+          : 'With PrivateLM Laptop, a laptop can send image jobs to this phone, '
+              'so the laptop and phones make images at the same time. Uses the '
+              'image model loaded on this phone.'),
     ];
   }
 

@@ -88,6 +88,7 @@
 	<key>NSBonjourServices</key>
 	<array>
 		<string>_privatelm._tcp</string>
+		<string>_privatelm-img._tcp</string>
 	</array>
 </dict>
 </plist>

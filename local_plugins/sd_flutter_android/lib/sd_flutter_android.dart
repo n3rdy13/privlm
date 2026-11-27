@@ -68,6 +68,43 @@ class SdFlutterAndroid {
     return bytes;
   }
 
+  /// iOS: generates with full control (the phone cluster's image worker).
+  /// [seed] < 0 picks a random one; an empty [sampler] means Euler a.
+  /// Returns `{rgb: Uint8List, width: int, height: int, seed: int}`.
+  static Future<Map<String, Object>?> generateImageEx(
+    String prompt, {
+    int steps = 20,
+    int width = 512,
+    int height = 512,
+    int seed = -1,
+    String negativePrompt = '',
+    double cfgScale = -1,
+    String sampler = '',
+    Function(int step, int total)? onProgress,
+  }) async {
+    _ensureInitialized();
+    _onProgress = onProgress;
+
+    final out = await _channel.invokeMethod<Map<Object?, Object?>>('generateImageEx', {
+      'prompt': prompt,
+      'steps': steps,
+      'width': width,
+      'height': height,
+      'seed': seed,
+      'negativePrompt': negativePrompt,
+      'cfgScale': cfgScale,
+      'sampler': sampler,
+    });
+    final rgb = out?['rgb'];
+    if (out == null || rgb is! Uint8List) return null;
+    return {
+      'rgb': rgb,
+      'width': (out['width'] as num?)?.toInt() ?? width,
+      'height': (out['height'] as num?)?.toInt() ?? height,
+      'seed': (out['seed'] as num?)?.toInt() ?? seed,
+    };
+  }
+
   static Future<void> unloadModel() async {
     await _channel.invokeMethod('unloadModel');
   }

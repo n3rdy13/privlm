@@ -22,6 +22,7 @@ import 'services/download_service.dart';
 import 'services/update_service.dart';
 import 'services/device_info_service.dart';
 import 'services/local_image_service.dart';
+import 'services/image_worker_service.dart';
 import 'services/app_log_service.dart';
 import 'services/crash_reporting_service.dart';
 import 'services/image_generation_notification_service.dart';
@@ -92,6 +93,7 @@ void main() {
     Get.put(DownloadService());
     if (UpdateService.isSupported) Get.put(UpdateService(), permanent: true);
     Get.put(LocalImageService());
+    if (ClusterService.isSupported) Get.put(ImageWorkerService(), permanent: true);
     final crashReporting = await Get.putAsync(() => CrashReportingService().init().timeout(
           const Duration(seconds: 10),
           onTimeout: () {

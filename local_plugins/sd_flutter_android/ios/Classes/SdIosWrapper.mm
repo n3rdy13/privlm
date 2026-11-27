@@ -1,5 +1,6 @@
 #import "SdIosWrapper.h"
 #include "stable-diffusion.h"
+#include <string>
 
 static sd_ctx_t* g_sd_ctx = nullptr;
 static SdProgressBlock g_progress_block = nil;
@@ -67,15 +68,43 @@ static void ios_sd_log_cb(sd_log_level_t level, const char* text, void* data) {
 }
 
 - (NSData *)generateImage:(NSString *)prompt steps:(int)steps {
+    NSDictionary *out = [self generateImage:prompt steps:steps width:512 height:512 seed:-1
+                             negativePrompt:@"" cfgScale:-1 sampler:@""];
+    return out[@"data"];
+}
+
+- (NSDictionary *)generateImage:(NSString *)prompt
+                          steps:(int)steps
+                          width:(int)width
+                         height:(int)height
+                           seed:(int64_t)seed
+                 negativePrompt:(NSString *)negativePrompt
+                       cfgScale:(float)cfgScale
+                        sampler:(NSString *)sampler {
     if (!g_sd_ctx) return nil;
+
+    // Keep the prompt strings alive for the whole call.
+    std::string prompt_s = prompt ? [prompt UTF8String] : "";
+    std::string negative_s = negativePrompt ? [negativePrompt UTF8String] : "";
 
     sd_img_gen_params_t params;
     sd_img_gen_params_init(&params);
-    params.prompt = [prompt UTF8String];
+    params.prompt = prompt_s.c_str();
+    params.negative_prompt = negative_s.c_str();
     params.sample_params.sample_steps = steps;
-    params.width = 512;
-    params.height = 512;
+    params.width = width > 0 ? width : 512;
+    params.height = height > 0 ? height : 512;
+    if (seed < 0) {
+        // Pick it here so the caller learns which seed made the image.
+        seed = (int64_t)arc4random_uniform(0x7fffffff);
+    }
+    params.seed = seed;
     params.sample_params.sample_method = EULER_A_SAMPLE_METHOD;
+    if (sampler.length > 0) {
+        enum sample_method_t method = str_to_sample_method([sampler UTF8String]);
+        if (method != SAMPLE_METHOD_COUNT) params.sample_params.sample_method = method;
+    }
+    if (cfgScale > 0) params.sample_params.guidance.txt_cfg = cfgScale;
 
     g_progress_block = self.onProgress;
     sd_set_progress_callback(ios_sd_progress_cb, NULL);
@@ -89,11 +118,13 @@ static void ios_sd_log_cb(sd_log_level_t level, const char* text, void* data) {
 
     size_t size = result->width * result->height * result->channel;
     NSData *data = [NSData dataWithBytes:result->data length:size];
+    NSDictionary *out = @{@"data": data, @"width": @(result->width), @"height": @(result->height),
+                          @"seed": @(seed)};
 
     free(result->data);
     free(result);
 
-    return data;
+    return out;
 }
 
 - (void)unloadModel {

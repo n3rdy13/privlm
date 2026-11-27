@@ -10,6 +10,7 @@ import UIKit
 final class ClusterChannel: NSObject, NetServiceDelegate {
     private let channel: FlutterMethodChannel
     private var service: NetService?
+    private var imageService: NetService?
     private var browser: WorkerBrowser?
     private var ramMb = 0
     private var bandwidth = 0.0
@@ -57,6 +58,26 @@ final class ClusterChannel: NSObject, NetServiceDelegate {
             result(nil)
         case "localFreeRamMb":
             result(LlamaClusterWorker.availableMemoryMb())
+        case "advertiseImageWorker":
+            // The app serves image generation over HTTP (Dart); this only
+            // announces it on the Wi-Fi so a laptop's "Find nearby" sees it.
+            let port = args["port"] as? Int ?? 50061
+            var txt: [String: Data] = [:]
+            for (key, value) in args["txt"] as? [String: String] ?? [:] {
+                txt[key] = Data(value.utf8)
+            }
+            txt["id"] = Data(Self.workerId.utf8)
+            imageService?.stop()
+            let images = NetService(domain: "local.", type: "_privatelm-img._tcp.",
+                                    name: "PrivateLM Images \(UIDevice.current.name)", port: Int32(port))
+            images.setTXTRecord(NetService.data(fromTXTRecord: txt))
+            images.publish()
+            imageService = images
+            result(nil)
+        case "stopImageWorkerAdvert":
+            imageService?.stop()
+            imageService = nil
+            result(nil)
         case "benchmark":
             DispatchQueue.global(qos: .userInitiated).async {
                 let gbps = LlamaClusterWorker.memoryBandwidth(withThreads: Int32(self.performanceCores()))

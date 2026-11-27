@@ -86,6 +86,9 @@ class ClusterService extends GetxService {
   /// The loaded model is generating tokens (set by InferenceService).
   final generating = false.obs;
 
+  /// This phone takes image jobs from a laptop (set by ImageWorkerService).
+  final imageWorker = false.obs;
+
   String deviceName = '';
   double? _localSpeed;
   Timer? _statusTimer;
@@ -124,6 +127,7 @@ class ClusterService extends GetxService {
       ever<bool>(serving, (_) => _updateKeepScreenOn());
       ever<List<ClusterShare>>(split, (_) => _updateKeepScreenOn());
       ever<bool>(generating, (_) => _updateKeepScreenOn());
+      ever<bool>(imageWorker, (_) => _updateKeepScreenOn());
       refreshWifiAddress();
     }
   }
@@ -143,7 +147,7 @@ class ClusterService extends GetxService {
   void _updateKeepScreenOn() {
     final s = worker.value;
     final on = s.running || s.starting || serving.value ||
-        split.length > 1 || generating.value;
+        split.length > 1 || generating.value || imageWorker.value;
     if (on == _screenKeptOn) return;
     _screenKeptOn = on;
     LlamaCluster.setKeepScreenOn(on).catchError((_) {});

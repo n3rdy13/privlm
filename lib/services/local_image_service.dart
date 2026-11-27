@@ -1,5 +1,6 @@
 import 'dart:async';
 import 'dart:io' show File, Platform;
+import 'dart:math' show Random;
 import 'package:flutter/services.dart';
 import 'package:get/get.dart';
 import 'package:image/image.dart' as img;
@@ -10,6 +11,17 @@ import '../ffi/sd_ffi_bindings.dart';
 import 'app_log_service.dart';
 import 'hive_service.dart';
 import 'sd_isolate_processor.dart';
+
+/// An image made for another device (the phone cluster's image worker).
+class WorkerImage {
+  final Uint8List png;
+  final int width;
+  final int height;
+
+  /// The seed that made it, or -1 if the backend can't say (CoreML).
+  final int seed;
+  const WorkerImage(this.png, this.width, this.height, this.seed);
+}
 
 class LocalImageService extends GetxService {
   final HiveService _hive = Get.find<HiveService>();
@@ -582,6 +594,164 @@ class LocalImageService extends GetxService {
           details:
               'backend=${currentBackend.value.displayName}, model=${loadedModelName.value}, error=$e');
       return null;
+    }
+  }
+
+  /// Sampler names other apps send (A1111 style, or stable-diffusion.cpp's).
+  static SampleMethod sampleMethodFor(String name) {
+    switch (name.trim().toLowerCase()) {
+      case 'euler':
+        return SampleMethod.euler;
+      case 'heun':
+        return SampleMethod.heun;
+      case 'dpm2':
+        return SampleMethod.dpm2;
+      case 'dpm++ 2m':
+      case 'dpm++2m':
+        return SampleMethod.dpmpp2m;
+      case 'lcm':
+        return SampleMethod.lcm;
+      case 'ddim':
+      case 'ddim_trailing':
+        return SampleMethod.ddimTrailing;
+      default:
+        return SampleMethod.eulerA;
+    }
+  }
+
+  static const _samplerNames = {
+    SampleMethod.euler: 'euler',
+    SampleMethod.eulerA: 'euler_a',
+    SampleMethod.heun: 'heun',
+    SampleMethod.dpm2: 'dpm2',
+    SampleMethod.dpmpp2m: 'dpm++2m',
+    SampleMethod.lcm: 'lcm',
+    SampleMethod.ddimTrailing: 'ddim_trailing',
+  };
+
+  /// Phone memory limits what it can render: sides are kept to multiples of
+  /// 64 from 256 to 768, and the image to at most 512 x 768 pixels.
+  static (int, int) workerSize(int width, int height) {
+    int side(int v) => ((v.clamp(256, 768) / 64).round() * 64).toInt();
+    var w = side(width), h = side(height);
+    while (w * h > 512 * 768) {
+      if (w >= h) {
+        w -= 64;
+      } else {
+        h -= 64;
+      }
+    }
+    return (w, h);
+  }
+
+  /// Makes one image with full control, for a laptop that sent this phone a
+  /// job. Returns null when it can't (see [lastFailureReason]).
+  Future<WorkerImage?> generateForWorker({
+    required String prompt,
+    String negativePrompt = '',
+    int width = 512,
+    int height = 512,
+    int steps = 20,
+    int seed = -1,
+    double cfgScale = 7.0,
+    String sampler = 'euler_a',
+    void Function(int step, int totalSteps)? onProgress,
+  }) async {
+    lastFailureReason = null;
+    if (!isModelLoaded.value) {
+      lastFailureReason = 'No image model is loaded on this phone.';
+      return null;
+    }
+    if (_nativeJobRunning || isGenerating.value) {
+      lastFailureReason = 'This phone is already making an image.';
+      return null;
+    }
+    final jobId = ++_jobId;
+    _nativeJobRunning = true;
+    isGenerating.value = true;
+    final (w, h) = workerSize(width, height);
+    final useSeed = seed < 0 ? Random().nextInt(0x7fffffff) : seed;
+    final useSteps = steps.clamp(1, 50).toInt();
+    final method = sampleMethodFor(sampler);
+    void progress(int step, int total) {
+      if (jobId == _jobId) onProgress?.call(step, total);
+    }
+
+    try {
+      Uint8List? rgb;
+      var outW = w, outH = h, outSeed = useSeed;
+      if (Platform.isIOS && currentBackend.value == Backend.metal) {
+        // CoreML takes only the prompt and steps, and returns a PNG.
+        const coreMl = MethodChannel('coreml_stable_diffusion');
+        final png = await coreMl.invokeMethod<Uint8List>(
+            'generateImage', {'prompt': prompt, 'steps': useSteps});
+        if (png == null) {
+          lastFailureReason = 'CoreML couldn\'t make the image.';
+          return null;
+        }
+        final decoded = img.decodePng(png);
+        return WorkerImage(png, decoded?.width ?? 512, decoded?.height ?? 512, -1);
+      } else if (Platform.isIOS) {
+        final out = await SdFlutterAndroid.generateImageEx(
+          prompt,
+          steps: useSteps,
+          width: w,
+          height: h,
+          seed: useSeed,
+          negativePrompt: negativePrompt,
+          cfgScale: cfgScale,
+          sampler: _samplerNames[method] ?? 'euler_a',
+          onProgress: progress,
+        );
+        if (out != null) {
+          rgb = out['rgb'] as Uint8List;
+          outW = out['width'] as int;
+          outH = out['height'] as int;
+          outSeed = out['seed'] as int;
+        }
+      } else {
+        final sub = _processor?.progressStream
+            .listen((u) => progress(u.step, u.totalSteps));
+        final result = await _processor!.generate(
+          prompt: prompt,
+          negativePrompt: negativePrompt,
+          width: w,
+          height: h,
+          steps: useSteps,
+          seed: useSeed,
+          cfgScale: cfgScale,
+          sampleMethod: method,
+        );
+        await sub?.cancel();
+        if (result.error == null) {
+          rgb = result.rgbBytes;
+          outW = result.width;
+          outH = result.height;
+        } else {
+          lastFailureReason = result.error;
+        }
+      }
+      if (rgb == null || rgb.length < outW * outH * 3) {
+        lastFailureReason ??= 'The image couldn\'t be made on this phone.';
+        return null;
+      }
+      final image = img.Image.fromBytes(
+        width: outW,
+        height: outH,
+        bytes: rgb.buffer,
+        bytesOffset: rgb.offsetInBytes,
+        numChannels: 3,
+      );
+      return WorkerImage(
+          Uint8List.fromList(img.encodePng(image)), outW, outH, outSeed);
+    } catch (e) {
+      lastFailureReason = '$e';
+      Get.find<AppLogService>()
+          .error('Image worker generation failed', details: e);
+      return null;
+    } finally {
+      isGenerating.value = false;
+      _nativeJobRunning = false;
     }
   }
 }
