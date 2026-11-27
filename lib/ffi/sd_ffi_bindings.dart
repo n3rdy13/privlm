@@ -311,6 +311,45 @@ typedef SdFfiImg2Img = Pointer<Uint8> Function(
   Pointer<IntPtr> outSize,
 );
 
+typedef SdFfiGenerateV2Native = Pointer<Uint8> Function(
+  Pointer<Void> ctx,
+  Pointer<Utf8> prompt,
+  Pointer<Utf8> negativePrompt,
+  Pointer<Uint8> initRgb,
+  Int32 width,
+  Int32 height,
+  Int32 steps,
+  Int64 seed,
+  Float cfgScale,
+  Int32 sampleMethod,
+  Int32 schedule,
+  Float strength,
+  Bool vaeTiling,
+  Pointer<Pointer<Utf8>> loraPaths,
+  Pointer<Float> loraWeights,
+  Int32 loraCount,
+  Pointer<IntPtr> outSize,
+);
+typedef SdFfiGenerateV2 = Pointer<Uint8> Function(
+  Pointer<Void> ctx,
+  Pointer<Utf8> prompt,
+  Pointer<Utf8> negativePrompt,
+  Pointer<Uint8> initRgb,
+  int width,
+  int height,
+  int steps,
+  int seed,
+  double cfgScale,
+  int sampleMethod,
+  int schedule,
+  double strength,
+  bool vaeTiling,
+  Pointer<Pointer<Utf8>> loraPaths,
+  Pointer<Float> loraWeights,
+  int loraCount,
+  Pointer<IntPtr> outSize,
+);
+
 typedef SdFfiGetCoresNative = Int32 Function();
 typedef SdFfiGetCores = int Function();
 
@@ -364,6 +403,9 @@ class SdFfiBindings {
 
   /// Image-to-image; null if the native library predates it.
   static SdFfiImg2Img? img2img;
+
+  /// Image-to-image and LoRAs; null if the native library predates it.
+  static SdFfiGenerateV2? generateV2;
   static late SdFfiGetCores getCores;
 
   static Pointer<NativeFunction<ProgressCallbackNative>>? _progressPtr;
@@ -423,6 +465,12 @@ class SdFfiBindings {
           .lookupFunction<SdFfiImg2ImgNative, SdFfiImg2Img>('sd_ffi_img2img');
     } catch (_) {
       img2img = null;
+    }
+    try {
+      generateV2 = _lib!.lookupFunction<SdFfiGenerateV2Native, SdFfiGenerateV2>(
+          'sd_ffi_generate_v2');
+    } catch (_) {
+      generateV2 = null;
     }
 
     getCores = _lib!

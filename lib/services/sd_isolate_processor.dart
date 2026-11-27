@@ -210,6 +210,10 @@ class SdIsolateProcessor {
     /// much of it to change (0..1).
     Uint8List? initImage,
     double strength = 0.75,
+
+    /// LoRA files (full paths) and their weights, for this image only.
+    List<String> loraPaths = const [],
+    List<double> loraWeights = const [],
   }) async {
     if (_disposed) {
       return GenerationResult(error: 'Processor is disposed');
@@ -241,6 +245,8 @@ class SdIsolateProcessor {
       'vaeTiling': vaeTiling,
       'initImage': initImage,
       'strength': strength,
+      'loraPaths': loraPaths,
+      'loraWeights': loraWeights,
     });
 
     return _activeCompleter!.future;
@@ -415,6 +421,8 @@ class SdIsolateProcessor {
     final vaeTiling = message['vaeTiling'] as bool;
     final initImage = message['initImage'] as Uint8List?;
     final strength = (message['strength'] as num?)?.toDouble() ?? 0.75;
+    final loraPaths = (message['loraPaths'] as List?)?.cast<String>() ?? const <String>[];
+    final loraWeights = (message['loraWeights'] as List?)?.cast<double>() ?? const <double>[];
 
     print(
         '[Isolate] _runGeneration started: prompt="$prompt", ${width}x$height, steps=$steps, seed=$seed');
@@ -424,9 +432,38 @@ class SdIsolateProcessor {
     final outSizePtr = calloc<IntPtr>(1);
 
     Pointer<Uint8>? initPtr;
+    final loraPtrs = <Pointer<Utf8>>[];
+    Pointer<Pointer<Utf8>>? loraPathsPtr;
+    Pointer<Float>? loraWeightsPtr;
     try {
       final Pointer<Uint8> resultPtr;
-      if (initImage != null) {
+      if (loraPaths.isNotEmpty) {
+        final v2 = SdFfiBindings.generateV2;
+        if (v2 == null) {
+          mainSendPort.send({'type': 'result', 'error': 'This build can\'t use LoRAs'});
+          return;
+        }
+        if (initImage != null) {
+          if (initImage.length < width * height * 3) {
+            mainSendPort.send({'type': 'result', 'error': 'The starting image has the wrong size'});
+            return;
+          }
+          initPtr = calloc<Uint8>(initImage.length);
+          initPtr.asTypedList(initImage.length).setAll(0, initImage);
+        }
+        loraPathsPtr = calloc<Pointer<Utf8>>(loraPaths.length);
+        loraWeightsPtr = calloc<Float>(loraPaths.length);
+        for (var i = 0; i < loraPaths.length; i++) {
+          final p = loraPaths[i].toNativeUtf8();
+          loraPtrs.add(p);
+          loraPathsPtr[i] = p;
+          loraWeightsPtr[i] = i < loraWeights.length ? loraWeights[i] : 1.0;
+        }
+        print('[Isolate] Calling FFI generate_v2() with ${loraPaths.length} LoRA(s)...');
+        resultPtr = v2(ctx, promptPtr, negPtr, initPtr ?? nullptr, width, height, steps, seed,
+            cfgScale, sampleMethod, schedule, strength, vaeTiling, loraPathsPtr, loraWeightsPtr,
+            loraPaths.length, outSizePtr);
+      } else if (initImage != null) {
         final img2img = SdFfiBindings.img2img;
         if (img2img == null || initImage.length < width * height * 3) {
           mainSendPort.send({
@@ -501,6 +538,11 @@ class SdIsolateProcessor {
       });
     } finally {
       if (initPtr != null) calloc.free(initPtr);
+      for (final p in loraPtrs) {
+        calloc.free(p);
+      }
+      if (loraPathsPtr != null) calloc.free(loraPathsPtr);
+      if (loraWeightsPtr != null) calloc.free(loraWeightsPtr);
       calloc.free(promptPtr);
       calloc.free(negPtr);
       calloc.free(outSizePtr);

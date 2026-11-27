@@ -84,6 +84,10 @@ class SdFlutterAndroid {
     /// Image-to-image: [width] x [height] RGB bytes, changed by [strength].
     Uint8List? initImage,
     double strength = 0.75,
+
+    /// LoRA files (full paths on this device) and their weights.
+    List<String> loraPaths = const [],
+    List<double> loraWeights = const [],
     Function(int step, int total)? onProgress,
   }) async {
     _ensureInitialized();
@@ -92,6 +96,8 @@ class SdFlutterAndroid {
     final out = await _channel.invokeMethod<Map<Object?, Object?>>('generateImageEx', {
       if (initImage != null) 'initImage': initImage,
       'strength': strength,
+      'loraPaths': loraPaths,
+      'loraWeights': loraWeights,
       'prompt': prompt,
       'steps': steps,
       'width': width,

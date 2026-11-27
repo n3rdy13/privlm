@@ -23,7 +23,9 @@ typedef void (^SdProgressBlock)(int step, int totalSteps);
                        cfgScale:(float)cfgScale
                         sampler:(NSString *)sampler
                       initImage:(NSData *)initImage
-                       strength:(float)strength;
+                       strength:(float)strength
+                      loraPaths:(NSArray<NSString *> *)loraPaths
+                    loraWeights:(NSArray<NSNumber *> *)loraWeights;
 - (void)unloadModel;
 
 @end

@@ -38,6 +38,7 @@ dependencies:
 
   # File System & Permissions
   path_provider: ^2.1.0
+  crypto: ^3.0.3
   permission_handler: ^11.3.0
 
   # Image Support

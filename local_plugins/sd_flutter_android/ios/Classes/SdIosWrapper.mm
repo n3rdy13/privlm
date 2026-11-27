@@ -1,6 +1,7 @@
 #import "SdIosWrapper.h"
 #include "stable-diffusion.h"
 #include <string>
+#include <vector>
 
 static sd_ctx_t* g_sd_ctx = nullptr;
 static SdProgressBlock g_progress_block = nil;
@@ -69,7 +70,8 @@ static void ios_sd_log_cb(sd_log_level_t level, const char* text, void* data) {
 
 - (NSData *)generateImage:(NSString *)prompt steps:(int)steps {
     NSDictionary *out = [self generateImage:prompt steps:steps width:512 height:512 seed:-1
-                             negativePrompt:@"" cfgScale:-1 sampler:@"" initImage:nil strength:0];
+                             negativePrompt:@"" cfgScale:-1 sampler:@"" initImage:nil strength:0
+                                  loraPaths:nil loraWeights:nil];
     return out[@"data"];
 }
 
@@ -82,7 +84,9 @@ static void ios_sd_log_cb(sd_log_level_t level, const char* text, void* data) {
                        cfgScale:(float)cfgScale
                         sampler:(NSString *)sampler
                       initImage:(NSData *)initImage
-                       strength:(float)strength {
+                       strength:(float)strength
+                      loraPaths:(NSArray<NSString *> *)loraPaths
+                    loraWeights:(NSArray<NSNumber *> *)loraWeights {
     if (!g_sd_ctx) return nil;
 
     // Keep the prompt strings alive for the whole call.
@@ -113,6 +117,23 @@ static void ios_sd_log_cb(sd_log_level_t level, const char* text, void* data) {
         params.init_image = {(uint32_t)params.width, (uint32_t)params.height, 3,
                              (uint8_t *)initImage.bytes};
         params.strength = strength > 0 && strength <= 1 ? strength : 0.75f;
+    }
+    // LoRAs for this image only: full paths and weights.
+    std::vector<std::string> lora_path_strings;
+    std::vector<sd_lora_t> loras;
+    for (NSUInteger i = 0; i < loraPaths.count; i++) {
+        lora_path_strings.push_back([loraPaths[i] UTF8String]);
+    }
+    for (NSUInteger i = 0; i < lora_path_strings.size(); i++) {
+        sd_lora_t lora = {};
+        lora.is_high_noise = false;
+        lora.multiplier = i < loraWeights.count ? loraWeights[i].floatValue : 1.0f;
+        lora.path = lora_path_strings[i].c_str();
+        loras.push_back(lora);
+    }
+    if (!loras.empty()) {
+        params.loras = loras.data();
+        params.lora_count = (uint32_t)loras.size();
     }
 
     g_progress_block = self.onProgress;

@@ -660,6 +660,10 @@ class LocalImageService extends GetxService {
     /// output size) and how much of it to change (0..1).
     Uint8List? initImage,
     double strength = 0.75,
+
+    /// LoRA files on this phone (full paths) and their weights.
+    List<String> loraPaths = const [],
+    List<double> loraWeights = const [],
     void Function(int step, int totalSteps)? onProgress,
   }) async {
     lastFailureReason = null;
@@ -698,8 +702,11 @@ class LocalImageService extends GetxService {
       }
       Uint8List? rgb;
       var outW = w, outH = h, outSeed = useSeed;
-      if (initRgb != null && Platform.isIOS && currentBackend.value == Backend.metal) {
-        lastFailureReason = 'Image-to-image needs the Metal image backend, not CoreML.';
+      if ((initRgb != null || loraPaths.isNotEmpty) &&
+          Platform.isIOS &&
+          currentBackend.value == Backend.metal) {
+        lastFailureReason = 'Starting from an image and LoRAs need the Metal image '
+            'backend, not CoreML.';
         return null;
       }
       if (Platform.isIOS && currentBackend.value == Backend.metal) {
@@ -725,6 +732,8 @@ class LocalImageService extends GetxService {
           sampler: _samplerNames[method] ?? 'euler_a',
           initImage: initRgb,
           strength: strength,
+          loraPaths: loraPaths,
+          loraWeights: loraWeights,
           onProgress: progress,
         );
         if (out != null) {
@@ -747,6 +756,8 @@ class LocalImageService extends GetxService {
           sampleMethod: method,
           initImage: initRgb,
           strength: strength,
+          loraPaths: loraPaths,
+          loraWeights: loraWeights,
         );
         await sub?.cancel();
         if (result.error == null) {

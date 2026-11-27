@@ -536,6 +536,9 @@ static uint8_t* sd_ffi_generate_impl(void* ctx,
                          bool vae_tiling,
                          const uint8_t* init_rgb,
                          float strength,
+                         const char* const* lora_paths,
+                         const float* lora_weights,
+                         int lora_count,
                          size_t* out_size) {
     if (!ctx || !out_size) return nullptr;
     *out_size = 0;
@@ -552,6 +555,21 @@ static uint8_t* sd_ffi_generate_impl(void* ctx,
         // stable-diffusion.cpp only reads the image; the cast drops const.
         params.init_image = {(uint32_t)params.width, (uint32_t)params.height, 3, (uint8_t*)init_rgb};
         params.strength = strength > 0.0f && strength <= 1.0f ? strength : 0.75f;
+    }
+    // LoRAs: full paths and weights, applied for this image only.
+    std::vector<sd_lora_t> loras;
+    for (int i = 0; lora_paths && i < lora_count; i++) {
+        if (!lora_paths[i]) continue;
+        sd_lora_t lora = {};
+        lora.is_high_noise = false;
+        lora.multiplier = lora_weights ? lora_weights[i] : 1.0f;
+        lora.path = lora_paths[i];
+        loras.push_back(lora);
+    }
+    if (!loras.empty()) {
+        params.loras = loras.data();
+        params.lora_count = (uint32_t)loras.size();
+        LOGI("[FFI] With %d LoRA(s)", (int)loras.size());
     }
 
     params.sample_params.sample_method = (sample_method_t)sample_method;
@@ -630,7 +648,8 @@ SD_FFI_API uint8_t* sd_ffi_generate(void* ctx,
                          bool vae_tiling,
                          size_t* out_size) {
     return sd_ffi_generate_impl(ctx, prompt, negative_prompt, width, height, steps, seed, cfg_scale,
-                                sample_method, schedule, vae_tiling, nullptr, 0.0f, out_size);
+                                sample_method, schedule, vae_tiling, nullptr, 0.0f, nullptr, nullptr, 0,
+                                out_size);
 }
 
 // Image-to-image: init_rgb is width x height x 3 bytes.
@@ -650,7 +669,32 @@ SD_FFI_API uint8_t* sd_ffi_img2img(void* ctx,
                          size_t* out_size) {
     if (!init_rgb) return nullptr;
     return sd_ffi_generate_impl(ctx, prompt, negative_prompt, width, height, steps, seed, cfg_scale,
-                                sample_method, schedule, vae_tiling, init_rgb, strength, out_size);
+                                sample_method, schedule, vae_tiling, init_rgb, strength, nullptr, nullptr, 0,
+                                out_size);
+}
+
+// Everything at once: init_rgb (width x height x 3, or null for text-to-image)
+// and lora_count LoRAs (full paths and weights).
+SD_FFI_API uint8_t* sd_ffi_generate_v2(void* ctx,
+                         const char* prompt,
+                         const char* negative_prompt,
+                         const uint8_t* init_rgb,
+                         int width,
+                         int height,
+                         int steps,
+                         int64_t seed,
+                         float cfg_scale,
+                         int sample_method,
+                         int schedule,
+                         float strength,
+                         bool vae_tiling,
+                         const char* const* lora_paths,
+                         const float* lora_weights,
+                         int lora_count,
+                         size_t* out_size) {
+    return sd_ffi_generate_impl(ctx, prompt, negative_prompt, width, height, steps, seed, cfg_scale,
+                                sample_method, schedule, vae_tiling, init_rgb, strength, lora_paths,
+                                lora_weights, lora_count, out_size);
 }
 
 SD_FFI_API int sd_ffi_get_cores(void) {

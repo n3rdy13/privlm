@@ -77,6 +77,8 @@ public class SdFlutterAndroidPlugin: NSObject, FlutterPlugin {
       let sampler = args["sampler"] as? String ?? ""
       let initImage = (args["initImage"] as? FlutterStandardTypedData)?.data
       let strength = (args["strength"] as? NSNumber)?.floatValue ?? 0.75
+      let loraPaths = args["loraPaths"] as? [String] ?? []
+      let loraWeights = (args["loraWeights"] as? [NSNumber]) ?? []
 
       self.wrapper.onProgress = { step, total in
         DispatchQueue.main.async {
@@ -89,7 +91,8 @@ public class SdFlutterAndroidPlugin: NSObject, FlutterPlugin {
         let out = self.wrapper.generateImage(prompt, steps: Int32(steps), width: Int32(width),
                                              height: Int32(height), seed: seed,
                                              negativePrompt: negative, cfgScale: cfg, sampler: sampler,
-                                             initImage: initImage, strength: strength)
+                                             initImage: initImage, strength: strength,
+                                             loraPaths: loraPaths, loraWeights: loraWeights)
         DispatchQueue.main.async {
           if let out = out, let data = out["data"] as? Data {
             result([
