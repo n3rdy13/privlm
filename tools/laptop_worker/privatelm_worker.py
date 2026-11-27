@@ -149,11 +149,12 @@ def build_sd_server(variant: str = "cpu", log=print) -> Path:
         log("Getting stable-diffusion.cpp…")
         subprocess.run(["git", "-C", str(HERE.parent.parent), "submodule", "update", "--init",
                         "local_plugins/sd_flutter_android/android/src/main/cpp/stable-diffusion.cpp"], check=True)
-        subprocess.run(["git", "-C", str(SD_DIR), "submodule", "update", "--init", "ggml",
-                        "thirdparty/libwebm"], check=True)
+        subprocess.run(["git", "-C", str(SD_DIR), "submodule", "update", "--init", "ggml"], check=True)
     log("Building sd-server (a few minutes, first time only)…")
     out = HERE / "build" / f"sd-{variant}"
-    flags = ["-DCMAKE_BUILD_TYPE=Release", "-DSD_SERVER_BUILD_FRONTEND=OFF", "-DBUILD_SHARED_LIBS=OFF"]
+    # PNG only: WebP/WebM output isn't used and needs more submodules.
+    flags = ["-DCMAKE_BUILD_TYPE=Release", "-DSD_SERVER_BUILD_FRONTEND=OFF", "-DBUILD_SHARED_LIBS=OFF",
+             "-DSD_WEBP=OFF", "-DSD_WEBM=OFF"]
     if variant == "vulkan":
         flags.append("-DSD_VULKAN=ON")
     subprocess.run(["cmake", "-S", str(SD_DIR), "-B", str(out), *flags], check=True, capture_output=True)

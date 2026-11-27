@@ -90,12 +90,14 @@ jobs:
         shell: bash
         run: |
           git submodule update --init --depth 50 "$SD_DIR"
-          git -C "$SD_DIR" submodule update --init --depth 50 ggml thirdparty/libwebm
+          git -C "$SD_DIR" submodule update --init --depth 50 ggml
 
       - name: Build sd-server (CPU and Vulkan)
         shell: pwsh
         run: |
-          $sd = "-DSD_SERVER_BUILD_FRONTEND=OFF", "-DBUILD_SHARED_LIBS=OFF"
+          $PSNativeCommandUseErrorActionPreference = $true  # stop at the first failing command
+          # PNG only: WebP/WebM output isn't used and needs more submodules.
+          $sd = "-DSD_SERVER_BUILD_FRONTEND=OFF", "-DBUILD_SHARED_LIBS=OFF", "-DSD_WEBP=OFF", "-DSD_WEBM=OFF"
           cmake -S $env:SD_DIR -B build/sd-cpu $($env:CPU_FLAGS -split ' ') $sd
           cmake --build build/sd-cpu --config Release --target sd-server -j 4
           cmake -S $env:SD_DIR -B build/sd-vulkan $($env:CPU_FLAGS -split ' ') $sd -DSD_VULKAN=ON
