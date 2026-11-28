@@ -427,6 +427,66 @@ class LocalImageService extends GetxService {
     }
   }
 
+  /// Steps for chat images: the setting, capped by backend.
+  int chatImageSteps() {
+    final requestedSteps = _hive.getSetting<int>(AppConstants.keyImageSteps,
+            defaultValue: AppConstants.defaultImageSteps) ??
+        AppConstants.defaultImageSteps;
+    return currentBackend.value == Backend.cpu
+        ? requestedSteps.clamp(1, 20).toInt()
+        : requestedSteps.clamp(1, 50).toInt();
+  }
+
+  /// Size for chat images (the setting, or Auto from free memory), and the
+  /// free memory it was based on (0 if unknown).
+  Future<(int, int)> chatImageSize() async {
+    int availableRamMb = 0;
+    if (Platform.isAndroid) {
+      try {
+        availableRamMb = await SdFlutterAndroid.getAvailableMemory();
+      } catch (e) {
+        print('[LocalImageService] Available memory check failed: $e');
+      }
+    }
+    final selectedImageSize = _hive.getSetting<int>(AppConstants.keyImageGenSize,
+            defaultValue: AppConstants.defaultImageGenSize) ??
+        AppConstants.defaultImageGenSize;
+    final autoImageSize = currentBackend.value == Backend.cpu
+        ? (availableRamMb > 0 && availableRamMb < 1800 ? 320 : 384)
+        : (availableRamMb > 0 && availableRamMb < 1800 ? 256 : 320);
+    final imageSize =
+        selectedImageSize == 0 ? autoImageSize : selectedImageSize.clamp(256, 512).toInt();
+    return (imageSize, availableRamMb);
+  }
+
+  /// A chat image with the Image options (avoid, starting image, LoRAs), at
+  /// the chat's size and steps. Returns PNG bytes, or null (see
+  /// [lastFailureReason]).
+  Future<Uint8List?> generateWithOptions({
+    required String prompt,
+    String negativePrompt = '',
+    Uint8List? initImage,
+    double strength = 0.55,
+    List<String> loraPaths = const [],
+    List<double> loraWeights = const [],
+    void Function(int step, int totalSteps)? onProgress,
+  }) async {
+    final (size, _) = await chatImageSize();
+    final image = await generateForWorker(
+      prompt: prompt,
+      negativePrompt: negativePrompt,
+      width: size,
+      height: size,
+      steps: chatImageSteps(),
+      initImage: initImage,
+      strength: strength,
+      loraPaths: loraPaths,
+      loraWeights: loraWeights,
+      onProgress: onProgress,
+    );
+    return image?.png;
+  }
+
   Future<Uint8List?> _generateImage({
     required String prompt,
     void Function(int step, int totalSteps)? onProgress,
@@ -440,35 +500,11 @@ class LocalImageService extends GetxService {
     StreamSubscription? logSub;
 
     try {
-      final requestedSteps = _hive.getSetting<int>(AppConstants.keyImageSteps,
-              defaultValue: AppConstants.defaultImageSteps) ??
-          AppConstants.defaultImageSteps;
-      final effectiveSteps = currentBackend.value == Backend.cpu
-          ? requestedSteps.clamp(1, 20).toInt()
-          : requestedSteps.clamp(1, 50).toInt();
-
-      int availableRamMb = 0;
-      if (Platform.isAndroid) {
-        try {
-          availableRamMb = await SdFlutterAndroid.getAvailableMemory();
-        } catch (e) {
-          print('[LocalImageService] Available memory check failed: $e');
-        }
-      }
-
-      final selectedImageSize = _hive.getSetting<int>(
-              AppConstants.keyImageGenSize,
-              defaultValue: AppConstants.defaultImageGenSize) ??
-          AppConstants.defaultImageGenSize;
-      final autoImageSize = currentBackend.value == Backend.cpu
-          ? (availableRamMb > 0 && availableRamMb < 1800 ? 320 : 384)
-          : (availableRamMb > 0 && availableRamMb < 1800 ? 256 : 320);
-      final imageSize = selectedImageSize == 0
-          ? autoImageSize
-          : selectedImageSize.clamp(256, 512).toInt();
+      final effectiveSteps = chatImageSteps();
+      final (imageSize, availableRamMb) = await chatImageSize();
 
       print(
-          '[LocalImageService] generateImage start: prompt="$prompt", backend=${currentBackend.value.displayName}, size=${imageSize}x$imageSize, steps=$effectiveSteps, availableRam=${availableRamMb}MB, sizeMode=${selectedImageSize == 0 ? "auto" : "fixed"}');
+          '[LocalImageService] generateImage start: prompt="$prompt", backend=${currentBackend.value.displayName}, size=${imageSize}x$imageSize, steps=$effectiveSteps, availableRam=${availableRamMb}MB');
 
       GenerationResult? result;
 

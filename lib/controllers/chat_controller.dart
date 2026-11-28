@@ -22,6 +22,7 @@ import '../services/hive_service.dart';
 import '../services/inference_service.dart';
 import '../services/cloud_service.dart';
 import '../services/local_image_service.dart';
+import '../services/image_options_service.dart';
 import '../services/app_log_service.dart';
 import '../services/image_generation_notification_service.dart';
 import '../services/document_extractor_service.dart';
@@ -722,9 +723,10 @@ class ChatController extends GetxController {
             sizeLabel: sizeLabel,
           );
           print('[ChatController] Starting image generation for: $text');
-          final pngBytes = await localImage.generateImage(
-            prompt: text,
-            onProgress: (step, total) {
+          // Image options (avoid, starting image, LoRAs) take the full-control path.
+          final opts = Get.find<ImageOptionsService>();
+          final active = opts.activeLoras;
+          void onImageProgress(int step, int total) {
               if (generationId != _generationSerial) return;
               print(
                   '[ChatController] Progress callback: step=$step, total=$total');
@@ -758,8 +760,21 @@ class ChatController extends GetxController {
                         .inSeconds,
               );
               _scrollToBottom();
-            },
-          );
+          }
+          final pngBytes = opts.inUse
+              ? await localImage.generateWithOptions(
+                  prompt: text,
+                  negativePrompt: opts.negative.value.trim(),
+                  initImage: opts.initImage.value,
+                  strength: opts.strength.value,
+                  loraPaths: [for (final l in active) l.path],
+                  loraWeights: [for (final l in active) l.weight],
+                  onProgress: onImageProgress,
+                )
+              : await localImage.generateImage(
+                  prompt: text,
+                  onProgress: onImageProgress,
+                );
           // Calculate total generation time
           final genDurationMs = imageGenStartTime.value != null
               ? DateTime.now()

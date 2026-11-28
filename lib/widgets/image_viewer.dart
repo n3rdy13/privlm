@@ -3,10 +3,13 @@ import 'dart:io';
 import 'dart:typed_data';
 import 'package:flutter/material.dart';
 import 'package:gal/gal.dart';
+import 'package:get/get.dart';
 import 'package:path_provider/path_provider.dart';
 import 'package:share_plus/share_plus.dart';
 
 import '../core/ui.dart';
+import '../services/image_options_service.dart';
+import '../services/local_image_service.dart';
 
 class ImageViewer extends StatefulWidget {
   final String base64Image;
@@ -36,6 +39,15 @@ class _ImageViewerState extends State<ImageViewer> {
   void initState() {
     super.initState();
     _bytes = base64Decode(widget.base64Image);
+  }
+
+  /// Image-to-image: the next chat prompt changes this picture.
+  void _useAsStart() {
+    Get.find<ImageOptionsService>().setInitImage(_bytes, 'Image from the chat');
+    Navigator.of(context).pop();
+    showToast('Starting image set',
+        'Your next prompt changes this picture. Adjust how much in Image options.',
+        tone: ToastTone.success);
   }
 
   Future<void> _download() async {
@@ -123,6 +135,15 @@ class _ImageViewerState extends State<ImageViewer> {
                       onTap: () => Navigator.of(context).pop(),
                     ),
                     const Spacer(),
+                    if (Get.isRegistered<ImageOptionsService>() &&
+                        Get.find<LocalImageService>().isModelLoaded.value) ...[
+                      _ChromeButton(
+                        icon: Icons.auto_fix_high_rounded,
+                        tooltip: 'Use as starting image',
+                        onTap: _useAsStart,
+                      ),
+                      const SizedBox(width: 10),
+                    ],
                     _ChromeButton(
                       icon: Icons.file_download_outlined,
                       tooltip: 'Download',

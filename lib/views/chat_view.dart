@@ -13,6 +13,8 @@ import '../controllers/home_controller.dart';
 import '../services/cluster_service.dart';
 import '../services/inference_service.dart';
 import '../services/local_image_service.dart';
+import '../services/image_options_service.dart';
+import '../widgets/image_options_sheet.dart';
 import '../ffi/sd_ffi_bindings.dart';
 import '../utils/thought_parser.dart';
 import '../widgets/attachment_preview.dart';
@@ -620,6 +622,12 @@ class ChatView extends GetView<ChatController> {
               final steps = settings.imageSteps.value;
               final size = settings.imageGenSize.value;
               final sizeLabel = size == 0 ? 'Auto' : '${size}px';
+              final opts = Get.find<ImageOptionsService>();
+              final loraCount = opts.activeLoras.length;
+              final extras = [
+                if (opts.initImage.value != null) 'from image',
+                if (loraCount > 0) '$loraCount LoRA${loraCount == 1 ? '' : 's'}',
+              ];
               final backend = localImage.currentBackend.value;
               final backendLabel = backend == Backend.cpu
                   ? 'CPU'
@@ -653,7 +661,7 @@ class ChatView extends GetView<ChatController> {
                             const SizedBox(width: 6),
                             Flexible(
                               child: Text(
-                                'Image gen · $steps ${steps == 1 ? "step" : "steps"} · $sizeLabel · $backendLabel',
+                                'Image gen · $steps ${steps == 1 ? "step" : "steps"} · $sizeLabel · $backendLabel${extras.isEmpty ? '' : ' · ${extras.join(' · ')}'}',
                                 overflow: TextOverflow.ellipsis,
                                 style: GoogleFonts.inter(
                                   fontSize: 11,
@@ -664,6 +672,42 @@ class ChatView extends GetView<ChatController> {
                             ),
                           ],
                         ),
+                      ),
+                    ),
+                    const SizedBox(width: 8),
+                    // Image options: avoid, starting image, LoRAs.
+                    GestureDetector(
+                      onTap: () => showImageOptionsSheet(context),
+                      child: Container(
+                        height: 30,
+                        padding: const EdgeInsets.symmetric(horizontal: 10),
+                        decoration: BoxDecoration(
+                          color: opts.inUse
+                              ? accent.withValues(alpha: 0.16)
+                              : (isDark
+                                  ? Colors.white.withValues(alpha: 0.06)
+                                  : Colors.black.withValues(alpha: 0.04)),
+                          borderRadius: BorderRadius.circular(15),
+                          border: Border.all(
+                              color: opts.inUse ? accent.withValues(alpha: 0.4) : _sep(context),
+                              width: 0.5),
+                        ),
+                        child: Row(mainAxisSize: MainAxisSize.min, children: [
+                          Icon(Icons.tune_rounded,
+                              size: 15,
+                              color: opts.inUse
+                                  ? accent
+                                  : (isDark ? Colors.white70 : Colors.black54)),
+                          const SizedBox(width: 4),
+                          Text('Options',
+                              style: GoogleFonts.inter(
+                                fontSize: 12,
+                                fontWeight: FontWeight.w600,
+                                color: opts.inUse
+                                    ? accent
+                                    : (isDark ? Colors.white : Colors.black),
+                              )),
+                        ]),
                       ),
                     ),
                     const SizedBox(width: 8),
