@@ -1,5 +1,8 @@
 # Laptop app
 
+New to image models? Start with the step-by-step guide:
+[docs/first-image-guide.html](../../docs/first-image-guide.html) (open it in a browser).
+
 Lets a laptop join a PrivateLM phone cluster in either role:
 
 - **Master:** the laptop runs the model, with part of its layers on phones
