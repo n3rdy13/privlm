@@ -61,8 +61,9 @@ class _ImageOptionsBodyState extends State<_ImageOptionsBody> {
         children: [
           if (coreMl) ...[
             AppNotice(
-              'Starting images and LoRAs need the GPU (Metal) image backend. '
-              'Switch it in Settings → Image generation, then load the image model again.',
+              'Starting images and LoRAs need the CPU image backend, not GPU '
+              '(Apple NPU). Switch Backend to CPU in Settings → Image generation, '
+              'then load the image model again.',
               icon: Icons.info_outline_rounded,
               color: t.orange,
             ),

@@ -86,8 +86,8 @@ and style, a lot (0.7 and up) keeps only its rough layout and colors. The
 picture is cropped to the chosen size's shape. Variations and the Queue work
 the same way, so you can make several versions of one picture at once, or
 refine a gallery favorite. Phones need the updated PrivateLM app for this
-(older ones are skipped), and an iPhone needs the Metal image backend, not
-CoreML.
+(older ones are skipped), and an iPhone's image Backend must be CPU (Settings
+→ Image generation), not GPU (Apple NPU).
 
 **LoRAs.** Click **LoRAs…**, choose the folder where you keep LoRA files
 (`.safetensors`), tick the ones to use and set each one's weight (how

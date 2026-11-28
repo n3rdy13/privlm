@@ -741,8 +741,9 @@ class LocalImageService extends GetxService {
       if ((initRgb != null || loraPaths.isNotEmpty) &&
           Platform.isIOS &&
           currentBackend.value == Backend.metal) {
-        lastFailureReason = 'Starting from an image and LoRAs need the Metal image '
-            'backend, not CoreML.';
+        lastFailureReason = 'Starting images and LoRAs need the CPU image backend, '
+            'not GPU (Apple NPU): switch it in Settings → Image generation, then '
+            'load the image model again.';
         return null;
       }
       if (Platform.isIOS && currentBackend.value == Backend.metal) {
